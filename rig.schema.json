@@ -1,0 +1,147 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RigManifest",
+  "description": "Schema for rig.json (v2) developer environment supervisor manifests.",
+  "type": "object",
+  "required": [
+    "project"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "default_mode": {
+      "type": "string"
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/Service"
+      }
+    },
+    "modes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "services"
+        ],
+        "properties": {
+          "services": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/definitions/Service"
+            }
+          }
+        }
+      }
+    },
+    "scopes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "Service": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "fd",
+            "port",
+            "compose"
+          ]
+        },
+        "cwd": {
+          "type": "string",
+          "default": "."
+        },
+        "command": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "app": {
+          "type": "string"
+        },
+        "factory": {
+          "type": "boolean",
+          "default": false
+        },
+        "python": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object"
+        },
+        "inherit": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "healthcheck_path": {
+          "type": "string"
+        },
+        "healthcheck_timeout": {
+          "type": "number",
+          "default": 45.0
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "compose_file": {
+          "type": "string"
+        },
+        "compose_service": {
+          "type": "string"
+        },
+        "compose_port": {
+          "type": "integer"
+        },
+        "docker_context": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

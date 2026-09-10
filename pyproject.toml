@@ -1,6 +1,6 @@
 [project]
 name = "rig"
-version = "0.1.0"
+version = "0.2.0"
 description = "Zero-dependency local dev environment and process runner with dynamic port allocation, socket inheritance, and verified lifecycle management."
 readme = "README.md"
 requires-python = ">=3.10"

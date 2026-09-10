@@ -2444,3 +2444,409 @@ def test_single_pass_rendering_tolerates_literal_braces_in_paths(monkeypatch, tm
     assert str(root_with_brace) in recorded[0]
 
 
+# --------------------------------------------------------------------------------------
+# Rig v2 Machine-Wide Supervisor Tests
+# --------------------------------------------------------------------------------------
+
+
+def test_rig_state_home_override(monkeypatch, tmp_path):
+    custom_state = tmp_path / "custom_rig_state"
+    monkeypatch.setenv("RIG_STATE_HOME", str(custom_state))
+
+    assert stack.get_state_home() == custom_state.resolve()
+    assert stack.get_instances_dir() == custom_state.resolve() / "instances"
+    assert stack.get_instance_dir("my-inst") == custom_state.resolve() / "instances" / "my-inst"
+
+    ensured = stack.ensure_instance_dir("my-inst")
+    assert ensured.is_dir()
+    assert stat.S_IMODE(ensured.stat().st_mode) == 0o700
+
+
+def test_manifest_with_modes_and_for_mode(tmp_path):
+    manifest_path = tmp_path / "rig.json"
+    manifest_data = {
+        "project": "multi-stack",
+        "default_mode": "native",
+        "services": {
+            "postgres": {
+                "type": "compose",
+                "compose_file": "docker-compose.yml",
+                "compose_service": "postgres",
+                "compose_port": 5432,
+            }
+        },
+        "modes": {
+            "native": {
+                "services": {
+                    "backend": {
+                        "type": "fd",
+                        "command": "python -m app",
+                        "depends_on": ["postgres"],
+                    }
+                }
+            },
+            "container": {
+                "services": {
+                    "backend": {
+                        "type": "compose",
+                        "compose_file": "docker-compose.yml",
+                        "compose_service": "backend",
+                        "compose_port": 8000,
+                        "depends_on": ["postgres"],
+                    }
+                }
+            },
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest_data))
+
+    manifest = stack.load_manifest(manifest_path)
+    assert manifest.project == "multi-stack"
+    assert manifest.default_mode == "native"
+    assert "postgres" in manifest.base_services
+    assert "native" in manifest.modes
+    assert "container" in manifest.modes
+
+    # Default mode is native
+    assert manifest.active_mode == "native"
+    assert manifest.services["backend"].type == "fd"
+
+    # Switching to container mode
+    container_manifest = manifest.for_mode("container")
+    assert container_manifest.active_mode == "container"
+    assert container_manifest.services["backend"].type == "compose"
+    assert "postgres" in container_manifest.services
+
+    # Invalid mode
+    with pytest.raises(stack.StackError, match="unknown mode 'cloud'"):
+        manifest.for_mode("cloud")
+
+
+def test_cmd_up_mode_conflict_requires_switch(monkeypatch, tmp_path):
+    monkeypatch.setenv("RIG_STATE_HOME", str(tmp_path / "state"))
+    manifest_path = tmp_path / "rig.json"
+    manifest_data = {
+        "project": "mode-test",
+        "default_mode": "native",
+        "modes": {
+            "native": {
+                "services": {
+                    "backend": {"type": "port", "cwd": ".", "command": ["echo"]}
+                }
+            },
+            "container": {
+                "services": {
+                    "backend": {"type": "port", "cwd": ".", "command": ["echo"]}
+                }
+            },
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest_data))
+
+    monkeypatch.setattr(stack, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(stack, "identity_matches", lambda rec: True)
+    monkeypatch.setattr(stack, "_await_ready", lambda *args, **kwargs: True)
+
+    # Bring up in native mode
+    dummy_native = {"name": "backend", "type": "port", "pid": 1001, "pgid": 1001, "port": 8000}
+    monkeypatch.setattr(stack, "_start_service", lambda *args, **kwargs: dummy_native)
+
+    ret = stack.cmd_up(tmp_path, manifest_path, mode="native")
+    assert ret == 0
+
+    # Try to bring up in container mode without --switch
+    dummy_container = {"name": "backend", "type": "port", "pid": 1002, "pgid": 1002, "port": 8000}
+    monkeypatch.setattr(stack, "_start_service", lambda *args, **kwargs: dummy_container)
+
+    with pytest.raises(stack.RigError) as exc_info:
+        stack.cmd_up(tmp_path, manifest_path, mode="container", switch=False)
+    assert exc_info.value.code == "E_MODE_CONFLICT"
+    assert exc_info.value.exit_code == stack.EXIT_MUTEX_CONFLICT
+
+    # Bring up with switch=True
+    stopped = []
+    monkeypatch.setattr(stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated")
+    ret_switch = stack.cmd_up(tmp_path, manifest_path, mode="container", switch=True)
+    assert ret_switch == 0
+    assert "backend" in stopped
+
+    # State now reflects container mode
+    state = stack.read_state(stack._state_path(tmp_path))
+    assert state["mode"] == "container"
+
+
+def test_cmd_ps_empty_and_populated(monkeypatch, tmp_path, capsys):
+    state_home = tmp_path / "rig_state"
+    monkeypatch.setenv("RIG_STATE_HOME", str(state_home))
+
+    # Empty registry
+    ret = stack.cmd_ps(as_json=True)
+    assert ret == 0
+    captured = capsys.readouterr()
+    res = json.loads(captured.out)
+    assert res["schema"] == "rig.ps/1"
+    assert res["ok"] is True
+    assert res["data"]["instances"] == []
+
+    # Populate an instance
+    inst_dir = stack.ensure_instance_dir("proj-12345678")
+    state = {
+        "instance": "proj-12345678",
+        "project": "proj",
+        "mode": "native",
+        "root": str(tmp_path),
+        "services": {
+            "api": {
+                "name": "api",
+                "type": "fd",
+                "pid": 55555,
+                "pgid": 55555,
+                "port": 8080,
+                "url": "http://127.0.0.1:8080",
+                "binary": "/usr/bin/python",
+                "argv": ["python", "app.py"],
+                "start_time": "Thu Jan 1 00:00:00 2026",
+                "identity": "python app.py",
+            }
+        },
+    }
+    stack.write_state(inst_dir / "state.json", state)
+
+    monkeypatch.setattr(stack, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(stack, "identity_matches", lambda rec: True)
+
+    # Human table
+    ret_table = stack.cmd_ps(as_json=False)
+    assert ret_table == 0
+    table_out = capsys.readouterr().out
+    assert "proj" in table_out
+    assert "proj-12345678" in table_out
+    assert "running" in table_out
+
+    # JSON output
+    ret_json = stack.cmd_ps(as_json=True)
+    assert ret_json == 0
+    json_out = json.loads(capsys.readouterr().out)
+    assert json_out["ok"] is True
+    assert len(json_out["data"]["instances"]) == 1
+    inst_data = json_out["data"]["instances"][0]
+    assert inst_data["project"] == "proj"
+    assert inst_data["status"] == "running"
+    assert inst_data["services"]["api"]["status"] == "running"
+
+
+def test_cmd_down_by_instance_id_and_project_slug(monkeypatch, tmp_path):
+    state_home = tmp_path / "rig_state"
+    monkeypatch.setenv("RIG_STATE_HOME", str(state_home))
+
+    inst_dir = stack.ensure_instance_dir("alpha-11223344")
+    state = {
+        "instance": "alpha-11223344",
+        "project": "alpha",
+        "root": str(tmp_path),
+        "services": {
+            "web": {"name": "web", "type": "port", "pid": 1234, "pgid": 1234, "port": 3000}
+        },
+    }
+    stack.write_state(inst_dir / "state.json", state)
+
+    stopped = []
+    monkeypatch.setattr(stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated")
+
+    # Stop by project slug "alpha"
+    ret = stack.cmd_down(target="alpha")
+    assert ret == 0
+    assert stopped == ["web"]
+
+    # Stopping again when empty
+    ret2 = stack.cmd_down(target="alpha-11223344")
+    assert ret2 == 0
+
+    # Unknown target
+    with pytest.raises(stack.RigError) as exc_info:
+        stack.cmd_down(target="nonexistent")
+    assert exc_info.value.code == "E_NOT_FOUND"
+    assert exc_info.value.exit_code == stack.EXIT_NOT_FOUND
+
+
+def test_cmd_down_ambiguous_slug_error(monkeypatch, tmp_path):
+    state_home = tmp_path / "rig_state"
+    monkeypatch.setenv("RIG_STATE_HOME", str(state_home))
+
+    dir1 = stack.ensure_instance_dir("beta-11111111")
+    stack.write_state(dir1 / "state.json", {"instance": "beta-11111111", "project": "beta", "services": {}})
+
+    dir2 = stack.ensure_instance_dir("beta-22222222")
+    stack.write_state(dir2 / "state.json", {"instance": "beta-22222222", "project": "beta", "services": {}})
+
+    with pytest.raises(stack.RigError) as exc_info:
+        stack.cmd_down(target="beta")
+    assert exc_info.value.code == "E_AMBIGUOUS"
+    assert exc_info.value.exit_code == stack.EXIT_NOT_FOUND
+
+
+def test_cmd_down_all(monkeypatch, tmp_path):
+    state_home = tmp_path / "rig_state"
+    monkeypatch.setenv("RIG_STATE_HOME", str(state_home))
+
+    dir1 = stack.ensure_instance_dir("proj1-11111111")
+    stack.write_state(
+        dir1 / "state.json",
+        {"instance": "proj1-11111111", "project": "proj1", "services": {"s1": {"name": "s1", "type": "port", "pid": 11, "pgid": 11}}},
+    )
+
+    dir2 = stack.ensure_instance_dir("proj2-22222222")
+    stack.write_state(
+        dir2 / "state.json",
+        {"instance": "proj2-22222222", "project": "proj2", "services": {"s2": {"name": "s2", "type": "port", "pid": 22, "pgid": 22}}},
+    )
+
+    stopped = []
+    monkeypatch.setattr(stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated")
+
+    ret = stack.cmd_down(all_instances=True)
+    assert ret == 0
+    assert "s1" in stopped
+    assert "s2" in stopped
+
+
+def test_cmd_down_orphaned_instance(monkeypatch, tmp_path):
+    state_home = tmp_path / "rig_state"
+    monkeypatch.setenv("RIG_STATE_HOME", str(state_home))
+
+    # Checkout was deleted: root path does not exist
+    deleted_root = tmp_path / "deleted_repo"
+    inst_dir = stack.ensure_instance_dir("orphan-99999999")
+    stack.write_state(
+        inst_dir / "state.json",
+        {
+            "instance": "orphan-99999999",
+            "project": "orphan",
+            "root": str(deleted_root),
+            "services": {
+                "orphan_svc": {"name": "orphan_svc", "type": "port", "pid": 999, "pgid": 999}
+            },
+        },
+    )
+
+    stopped = []
+    monkeypatch.setattr(stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated")
+
+    ret = stack.cmd_down(target="orphan-99999999")
+    assert ret == 0
+    assert "orphan_svc" in stopped
+
+
+def test_cmd_prune(monkeypatch, tmp_path):
+    state_home = tmp_path / "rig_state"
+    monkeypatch.setenv("RIG_STATE_HOME", str(state_home))
+
+    # Instance with dead root and empty services
+    dead_dir = stack.ensure_instance_dir("dead-00000000")
+    stack.write_state(
+        dead_dir / "state.json",
+        {"instance": "dead-00000000", "project": "dead", "root": str(tmp_path / "nonexistent"), "services": {}},
+    )
+
+    # Active instance
+    alive_dir = stack.ensure_instance_dir("alive-11111111")
+    stack.write_state(
+        alive_dir / "state.json",
+        {"instance": "alive-11111111", "project": "alive", "root": str(tmp_path), "services": {"s": {"name": "s", "type": "port", "pid": 123, "pgid": 123}}},
+    )
+    monkeypatch.setattr(stack, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(stack, "identity_matches", lambda rec: True)
+
+    ret = stack.cmd_prune()
+    assert ret == 0
+    assert not dead_dir.exists()
+    assert alive_dir.exists()
+
+
+def test_cmd_check(tmp_path):
+    manifest_path = tmp_path / "rig.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "project": "check-test",
+                "services": {
+                    "valid_svc": {"type": "port", "cwd": ".", "command": ["echo"]}
+                },
+            }
+        )
+    )
+
+    ret_ok = stack.cmd_check(tmp_path, manifest_path)
+    assert ret_ok == stack.EXIT_OK
+
+    # Bad working directory
+    bad_manifest = tmp_path / "bad_rig.json"
+    bad_manifest.write_text(
+        json.dumps(
+            {
+                "project": "bad-test",
+                "services": {
+                    "bad_cwd": {"type": "port", "cwd": "nonexistent_dir", "command": ["echo"]}
+                },
+            }
+        )
+    )
+    ret_fail = stack.cmd_check(tmp_path, bad_manifest)
+    assert ret_fail == stack.EXIT_USAGE
+
+
+def test_cmd_init_fastapi_and_package_json(tmp_path):
+    proj_dir = tmp_path / "sample_app"
+    proj_dir.mkdir()
+    (proj_dir / "pyproject.toml").write_text("[project]\nname = 'sample_app'\ndependencies = ['fastapi', 'uvicorn']\n")
+    (proj_dir / "package.json").write_text('{"name": "frontend", "scripts": {"dev": "vite"}}\n')
+
+    ret = stack.cmd_init(proj_dir, dry_run=False)
+    assert ret == 0
+    manifest_file = proj_dir / "rig.json"
+    assert manifest_file.is_file()
+    data = json.loads(manifest_file.read_text())
+    assert data["project"] == "sample-app"
+    assert "native" in data["modes"]
+    services = data["modes"]["native"]["services"]
+    assert "backend" in services
+    assert "frontend" in services
+    assert services["frontend"]["depends_on"] == ["backend"]
+
+    # Re-running without --force fails
+    with pytest.raises(stack.RigError) as exc_info:
+        stack.cmd_init(proj_dir)
+    assert exc_info.value.code == "E_USAGE"
+
+
+def test_cmd_schema(capsys):
+    ret = stack.cmd_schema()
+    assert ret == 0
+    captured = capsys.readouterr()
+    schema = json.loads(captured.out)
+    assert schema["title"] == "RigManifest"
+    assert "modes" in schema["properties"]
+    assert "services" in schema["properties"]
+
+
+def test_main_json_envelope_success_and_error(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("RIG_STATE_HOME", str(tmp_path / "state"))
+
+    # Successful command with --json
+    code = stack.main(["schema", "--json"])
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["schema"] == "rig.schema/1"
+    assert out["ok"] is True
+
+    # Error command with --json
+    code_err = stack.main(["down", "nonexistent_target", "--json"])
+    assert code_err == stack.EXIT_NOT_FOUND
+    err_out = json.loads(capsys.readouterr().out)
+    assert err_out["schema"] == "rig.error/1"
+    assert err_out["ok"] is False
+    assert err_out["error"]["code"] == "E_NOT_FOUND"
+    assert err_out["error"]["exit_code"] == stack.EXIT_NOT_FOUND
+
+
+

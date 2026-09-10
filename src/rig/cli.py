@@ -2429,19 +2429,22 @@ def cmd_check(
             if svc.type in ("fd", "port"):
                 cmd = svc.command
                 if cmd:
-                    bin_name = cmd[0]
-                    if not shutil.which(bin_name) and not (cwd / bin_name).is_file():
+                    bin_str = str(render(cmd[0], {"root": str(root), "cwd": str(cwd), "python": sys.executable}))
+                    bin_path = Path(bin_str)
+                    if not (shutil.which(bin_str) or bin_path.is_file() or (cwd / bin_path).is_file() or (root / bin_path).is_file()):
                         issues.append({
                             "level": "error",
                             "check": f"{mode_tag} service:{sname}:binary".strip(),
-                            "message": f"executable '{bin_name}' not found on PATH or in cwd",
+                            "message": f"executable '{cmd[0]}' not found on PATH, in cwd, or at target path",
                         })
                 elif svc.type == "fd" and svc.python:
-                    if not shutil.which(svc.python):
+                    py_str = str(render(svc.python, {"root": str(root), "cwd": str(cwd), "python": sys.executable}))
+                    py_path = Path(py_str)
+                    if not (shutil.which(py_str) or py_path.is_file() or (cwd / py_path).is_file() or (root / py_path).is_file()):
                         issues.append({
                             "level": "error",
                             "check": f"{mode_tag} service:{sname}:python".strip(),
-                            "message": f"python interpreter '{svc.python}' not found on PATH",
+                            "message": f"python interpreter '{svc.python}' not found on PATH or at target path",
                         })
             elif svc.type == "compose":
                 if not shutil.which("docker"):

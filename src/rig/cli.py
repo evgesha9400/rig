@@ -37,6 +37,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -47,6 +48,7 @@ import stat
 import string
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -87,6 +89,16 @@ BASE_ENV_ALLOWLIST = (
     "SSL_CERT_DIR",
 )
 
+# The Docker client settings that decide which daemon answers and with which
+# credentials. A compose service is handed its declared environment, which is an
+# allowlist and excludes every DOCKER_* name, so these are added back
+# explicitly: without them a TLS or rootless setup cannot reach its own daemon.
+DOCKER_CLIENT_ENV_PASSTHROUGH = (
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY",
+)
+
 SECRET_NAME_PATTERN = re.compile(
     r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|^KEY$|APIKEY|PRIVATE",
     re.IGNORECASE,
@@ -125,6 +137,16 @@ class RigError(RuntimeError):
 
 
 StackError = RigError
+
+
+def manifest_error(message: str, *, hint: str | None = None) -> RigError:
+    """Return the error for a manifest that cannot be used as written.
+
+    Syntax, schema and structure faults are the caller's input, not a runtime
+    failure, so they exit with ``EXIT_USAGE`` and never look like a stack that
+    merely failed to start.
+    """
+    return RigError(message, code="E_USAGE", exit_code=EXIT_USAGE, hint=hint)
 
 
 
@@ -347,10 +369,17 @@ def write_state(path: Path, state: Mapping[str, Any]) -> None:
     """Publish state atomically so no reader observes a partial generation."""
     target_path = resolve_state_file(path)
     target_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    tmp = target_path.with_name(target_path.name + ".tmp")
-    fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_CLOEXEC, 0o600)
+    # A predictable temp name is a symlink target another user can plant, so the
+    # name is unique and created with O_CREAT | O_EXCL by tempfile.
+    tmp: str | None = None
     try:
-        with os.fdopen(fd, "w") as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=target_path.parent,
+            delete=False,
+            prefix=f".{target_path.name}.tmp.",
+        ) as handle:
+            tmp = handle.name
             json.dump(state, handle, indent=2, sort_keys=True)
             handle.write("\n")
             handle.flush()
@@ -358,8 +387,9 @@ def write_state(path: Path, state: Mapping[str, Any]) -> None:
         os.chmod(tmp, 0o600)
         os.replace(tmp, target_path)
     except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
         raise
 
 
@@ -462,16 +492,21 @@ def port_listener_matches(
     pids = [int(line.strip()) for line in proc.stdout.splitlines() if line.strip().isdigit()]
     if not pids:
         return False
+    owned = False
     for p in pids:
+        is_p_owned = False
         if pid is not None and p == pid:
-            return True
-        if pgid is not None:
+            is_p_owned = True
+        elif pgid is not None:
             try:
                 if os.getpgid(p) == pgid:
-                    return True
+                    is_p_owned = True
             except (ProcessLookupError, PermissionError, OSError):
                 pass
-    return False
+        if not is_p_owned:
+            return False
+        owned = True
+    return owned
 
 
 # --------------------------------------------------------------------------------------
@@ -1065,6 +1100,78 @@ def parse_compose_port(output: str) -> int:
     return int(port)
 
 
+# A record written before the Docker endpoint was pinned carries no
+# ``docker_host`` key at all, which is not the same as a recorded ``None``: the
+# first inherits whatever endpoint is ambient, the second pins the default local
+# daemon the service was actually started against.
+INHERIT_DOCKER_HOST: Any = object()
+
+
+def record_docker_endpoint(record: Mapping[str, Any]) -> tuple[Any, Any]:
+    """Return the Docker context and host one record was started against."""
+    return record.get("docker_context"), record.get("docker_host", INHERIT_DOCKER_HOST)
+
+
+def resolve_current_docker_context(env: Mapping[str, str] | None = None) -> str | None:
+    """Return the name of the Docker context that is active right now.
+
+    ``docker context use`` rebinds every later unqualified ``docker`` command to
+    another daemon, machine-wide and for good. A record that names no context
+    follows that switch, so it would look for its container on a daemon that
+    never held it: the new daemon answers 'no such object', the record is
+    discarded as stale, and the container stays behind on the old context with
+    nothing left that knows about it. Naming the active context at startup keeps
+    every later query and teardown on the daemon that holds the container.
+
+    ``None`` means Docker could not answer, and the record then inherits the
+    ambient context exactly as it did before.
+    """
+    cmd_env = dict(os.environ) if env is None else dict(env)
+    named = cmd_env.get("DOCKER_CONTEXT")
+    if named:
+        return named
+    try:
+        probe = subprocess.run(
+            ["docker", "context", "show"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            env=cmd_env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Docker missing, unreachable or too slow to answer must not fail a
+        # startup that Compose itself may still complete.
+        return None
+    if probe.returncode != 0:
+        return None
+    return probe.stdout.strip() or None
+
+
+def _pin_docker_endpoint(
+    cmd_env: dict[str, str], context: Any, docker_host: Any
+) -> dict[str, str]:
+    """Point one Docker command at the endpoint its record was started against.
+
+    A container exists only on the daemon that created it, so an ambient
+    ``DOCKER_HOST`` that changed since startup must never decide where a status
+    query or a teardown looks: the wrong daemon answers 'no such object', and
+    that answer would discard a live record and strand its container.
+    """
+    # Every caller passes a pinned context as ``--context``, which outranks this
+    # variable anyway, so it is dropped in both cases: a context named in the
+    # environment must never redirect a command away from its record's daemon.
+    cmd_env.pop("DOCKER_CONTEXT", None)
+    if docker_host is INHERIT_DOCKER_HOST:
+        return cmd_env
+    if docker_host:
+        cmd_env["DOCKER_HOST"] = str(docker_host)
+    else:
+        # The record pins the default local daemon, so an ambient override that
+        # appeared afterwards must not redirect this command.
+        cmd_env.pop("DOCKER_HOST", None)
+    return cmd_env
+
+
 def run_compose(
     instance: str,
     root: Path,
@@ -1073,44 +1180,317 @@ def run_compose(
     context: str | None = None,
     timeout: float = 180.0,
     env: Mapping[str, str] | None = None,
+    docker_host: Any = INHERIT_DOCKER_HOST,
 ) -> subprocess.CompletedProcess:
     argv = compose_argv(instance, root, compose_file, args, context)
     cmd_env = dict(os.environ) if env is None else dict(env)
-    if not context:
-        cmd_env.pop("DOCKER_CONTEXT", None)
+    _pin_docker_endpoint(cmd_env, context, docker_host)
     try:
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=cmd_env)
     except FileNotFoundError:
-        raise StackError("docker is not installed or not on PATH") from None
+        raise RigError("docker is not installed or not on PATH", code="E_EXTERNAL_TOOL", exit_code=EXIT_EXTERNAL_TOOL) from None
     except subprocess.TimeoutExpired:
         raise StackError(f"compose command timed out: {' '.join(args)}") from None
 
 
+def run_docker(
+    args: Sequence[str],
+    context: str | None = None,
+    timeout: float = 60.0,
+    docker_host: Any = INHERIT_DOCKER_HOST,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Run one plain ``docker`` command against one explicit Docker endpoint.
+
+    ``context`` and ``docker_host`` come from the record being inspected, so the
+    command reaches the daemon that holds its container.
+
+    ``env`` is the environment the record was started with. A plain ``docker``
+    command needs the ambient environment it runs in, not a service's declared
+    variables, so only the Docker client settings are taken from it -- the same
+    ones Compose was handed. They decide which config directory and certificates
+    the client reads, so without them an inspection or a teardown looks in the
+    default directory and cannot find its own context. A setting the record never
+    held is dropped for the same reason ``DOCKER_CONTEXT`` is: one that appeared
+    in the terminal afterwards must never redirect this command. ``None`` means
+    the record predates the recorded environment, and the ambient settings stand.
+    """
+    argv = ["docker"]
+    if context:
+        argv += ["--context", str(context)]
+    argv += list(args)
+    cmd_env = dict(os.environ)
+    if env is not None:
+        for name in DOCKER_CLIENT_ENV_PASSTHROUGH:
+            value = env.get(name)
+            if value is None:
+                cmd_env.pop(name, None)
+            else:
+                cmd_env[name] = str(value)
+    _pin_docker_endpoint(cmd_env, context, docker_host)
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=cmd_env)
+    except FileNotFoundError:
+        raise RigError("docker is not installed or not on PATH", code="E_EXTERNAL_TOOL", exit_code=EXIT_EXTERNAL_TOOL) from None
+    except subprocess.TimeoutExpired:
+        raise StackError(f"docker command timed out: {' '.join(args)}") from None
+
+
+def compose_file_present(record: Mapping[str, Any], root: Path) -> bool:
+    """Return ``True`` when this record's compose file is still on disk."""
+    compose_file = record.get("compose_file")
+    if not compose_file:
+        return False
+    return (Path(root) / str(compose_file)).is_file()
+
+
+DOCKER_ABSENT_MARKERS = ("no such object", "no such container")
+
+
+def docker_label_container_ids(record: Mapping[str, Any]) -> list[str] | None:
+    """Return the container IDs Compose labelled with this record's project and service.
+
+    ``None`` means Docker refused to answer, which is not the same as an empty
+    list: only an answered query proves no container exists.
+    """
+    context, docker_host = record_docker_endpoint(record)
+    try:
+        result = run_docker(
+            [
+                "ps",
+                "-q",
+                "-a",
+                "--filter",
+                f"label=com.docker.compose.project={record.get('instance')}",
+                "--filter",
+                f"label=com.docker.compose.service={record.get('compose_service')}",
+            ],
+            context,
+            docker_host=docker_host,
+            env=record_compose_env(record),
+        )
+    except (StackError, RigError):
+        return None
+    if result.returncode != 0:
+        return None
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def docker_reports_no_such_object(probe: subprocess.CompletedProcess) -> bool:
+    """Return ``True`` only when Docker itself answered that the container is gone.
+
+    Every other failure — an unreachable daemon above all — leaves the question
+    unanswered, and an unanswered question must never be read as absence.
+    """
+    answer = f"{probe.stderr or ''}\n{probe.stdout or ''}".lower()
+    return any(marker in answer for marker in DOCKER_ABSENT_MARKERS)
+
+
+def docker_container_status(
+    container: str,
+    context: Any = None,
+    docker_host: Any = INHERIT_DOCKER_HOST,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Return 'alive', 'stopped', 'absent', or 'error' for one container ID.
+
+    ``env`` is the record's own environment, which carries the Docker client
+    settings the container was started against.
+    """
+    try:
+        probe = run_docker(
+            ["inspect", "--format", "{{.State.Status}}", str(container)],
+            context,
+            docker_host=docker_host,
+            env=env,
+        )
+    except (StackError, RigError):
+        return "error"
+    if probe.returncode != 0:
+        return "absent" if docker_reports_no_such_object(probe) else "error"
+    return "alive" if probe.stdout.strip().lower() in ("running", "restarting") else "stopped"
+
+
+def docker_record_targets(record: Mapping[str, Any]) -> tuple[list[str], bool]:
+    """Return every container Docker holds for this record, and whether it answered.
+
+    Compose scales one service to several containers, so the single recorded ID
+    is only ever one of them and the Compose labels are the authority on the
+    rest. The second value is ``False`` when Docker refused the label query,
+    which is not proof that the service holds no container.
+    """
+    ids = docker_label_container_ids(record)
+    targets = list(ids or [])
+    recorded = str(record.get("container") or "")
+    if recorded and not any(
+        recorded.startswith(found) or found.startswith(recorded) for found in targets
+    ):
+        targets.insert(0, recorded)
+    return targets, ids is not None
+
+
+def docker_record_status(record: Mapping[str, Any]) -> str:
+    """Report a compose record's state through plain Docker, with no compose file.
+
+    Docker keeps the container and its Compose labels long after the checkout
+    that declared it is deleted, so a missing compose file never hides a
+    container. Only Docker's own 'no such object' answer reports 'absent': an
+    unreachable daemon reports 'error', so an outage never discards ownership.
+    A scaled service is judged by its liveliest container.
+
+    An unanswered label query leaves the target set unknown, so a recorded
+    container that is genuinely gone still reports 'error': the replicas the
+    query never listed may be running, and 'absent' would discard them.
+    """
+    targets, answered = docker_record_targets(record)
+    if not targets:
+        return "absent" if answered else "error"
+    context, docker_host = record_docker_endpoint(record)
+    compose_env = record_compose_env(record)
+    states = [
+        docker_container_status(target, context, docker_host, compose_env)
+        for target in targets
+    ]
+    for state in ("alive", "stopped", "error"):
+        if state in states:
+            return state
+    return "absent" if answered else "error"
+
+
+def docker_record_stop(record: Mapping[str, Any], remove: bool) -> str:
+    """Stop, and with ``remove`` also reclaim, every container of one compose service.
+
+    A scaled service owns more containers than the one recorded at start, so the
+    Compose labels decide the target set. Every target is attempted even after a
+    failure, and any failure is reported so the caller keeps its ownership record
+    and a later teardown can finish the job.
+
+    A target Docker itself reports gone is already reclaimed, so removal is
+    idempotent: a recorded container deleted by someone else must never make the
+    successful reclamation of a surviving replica look like a failure.
+
+    An unanswered label query is itself a failure: the recorded container is
+    still attempted, but the service cannot be reported as reclaimed while the
+    replicas the query never listed may still be running.
+    """
+    targets, answered = docker_record_targets(record)
+    if not targets:
+        return "stale" if answered else "failed"
+    context, docker_host = record_docker_endpoint(record)
+    compose_env = record_compose_env(record)
+    failed = False
+    for target in targets:
+        # Volumes are preserved: `rm -f` without `-v` reclaims the container only.
+        commands = [["stop", target]] + ([["rm", "-f", target]] if remove else [])
+        for args in commands:
+            try:
+                result = run_docker(
+                    args, context, docker_host=docker_host, env=compose_env
+                )
+            except (StackError, RigError):
+                failed = True
+                break
+            if result.returncode == 0:
+                continue
+            if docker_reports_no_such_object(result):
+                # Docker answered that this container is already gone, which is
+                # the state the command asked for. Nothing is left to reclaim,
+                # so the remaining commands for this target are skipped.
+                break
+            failed = True
+            break
+    return "failed" if failed or not answered else "terminated"
+
+
+def record_compose_env(record: Mapping[str, Any]) -> dict[str, str] | None:
+    """Return the environment one compose record was started with, if it was recorded.
+
+    A compose file may declare a variable as required -- ``${VAR:?message}`` --
+    and Compose then refuses every command, ``ps`` and ``stop`` included, while
+    that variable is undefined. The service was started with an environment that
+    satisfied the compose file, so the same names are replayed for every later
+    status query and teardown instead of whatever the terminal happens to hold.
+
+    Secret-looking values are masked in the record, exactly as they are for a
+    process service, so what is replayed proves a variable exists rather than
+    carrying its real value: that is all Compose needs to evaluate the file and
+    reach a container by project and service name. ``None`` means the record was
+    written before the environment was kept, and the ambient one is used.
+    """
+    env = record.get("compose_env")
+    if not isinstance(env, Mapping):
+        return None
+    return {str(key): str(value) for key, value in env.items()}
+
+
 def compose_record_status(record: Mapping[str, Any], root: Path) -> str:
-    """Return 'alive', 'absent', or 'error' for the recorded compose container."""
+    """Return 'alive', 'stopped', 'absent', or 'error' for one compose record.
+
+    A record owns every container Compose lists for its service, not just the
+    one recorded at start, so the service is judged by its liveliest container
+    and a deleted recorded ID never hides a surviving replica. An empty
+    ``container`` means discovery failed while starting, not that the container
+    is gone, so Compose is asked by service name instead. Only an answer from
+    Docker itself can report 'absent'. A deleted checkout takes Compose out of
+    reach, so Docker is asked directly instead.
+
+    Compose refusing to answer is not the container's state: a compose file that
+    declares a required variable cannot even be parsed while that variable is
+    undefined. Docker keeps the container and its Compose labels and needs no
+    compose file, so it is asked instead of reporting an unusable 'error'.
+    """
     container = record.get("container")
     instance = record.get("instance")
     compose_file = record.get("compose_file")
     service = record.get("compose_service")
-    if not (container and instance and compose_file and service):
+    if not (instance and compose_file and service):
         return "absent"
+    if not compose_file_present(record, root):
+        return docker_record_status(record)
+    context, docker_host = record_docker_endpoint(record)
+    compose_env = record_compose_env(record)
     try:
         result = run_compose(
             str(instance),
             Path(root),
             Path(compose_file),
-            ["ps", "-q", str(service)],
-            record.get("docker_context"),
+            ["ps", "-q", "-a", str(service)],
+            context,
             timeout=60.0,
+            env=compose_env,
+            docker_host=docker_host,
         )
-    except StackError:
-        return "error"
+    except (StackError, RigError):
+        return docker_record_status(record)
     if result.returncode != 0:
-        return "error"
+        return docker_record_status(record)
     ids = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if any(str(container).startswith(found) or found.startswith(str(container)) for found in ids):
-        return "alive"
-    return "absent"
+    recorded = str(container or "")
+    if not ids:
+        # Compose answered that the service holds no container. A recorded
+        # container is still probed: one that lost its project labels stays this
+        # record's responsibility until Docker itself reports it gone.
+        return (
+            docker_container_status(recorded, context, docker_host, compose_env)
+            if recorded
+            else "absent"
+        )
+    # Compose scales one service to several containers, so every listed ID
+    # belongs to this record and the recorded ID is only ever one of them. A
+    # deleted recorded container must never hide a surviving replica.
+    states = [
+        docker_container_status(found, context, docker_host, compose_env) for found in ids
+    ]
+    if recorded and not any(
+        recorded.startswith(found) or found.startswith(recorded) for found in ids
+    ):
+        states.append(docker_container_status(recorded, context, docker_host, compose_env))
+    for state in ("alive", "stopped"):
+        if state in states:
+            return state
+    # Compose listed at least one container, so an inspection that answers
+    # 'absent' contradicts Compose instead of proving the service is gone.
+    return "error"
 
 
 def compose_record_alive(record: Mapping[str, Any], root: Path) -> bool:
@@ -1156,6 +1536,7 @@ class Manifest:
     modes: dict[str, dict[str, Service]] = field(default_factory=dict)
     default_mode: str | None = None
     active_mode: str | None = None
+    explicit_scopes: dict[str, list[str]] = field(default_factory=dict)
 
     def resolve_services(self, names: Iterable[str]) -> list[str]:
         """Return the given services plus their transitive dependencies, in start order."""
@@ -1185,14 +1566,14 @@ class Manifest:
     def _members(self, scope: str) -> list[str]:
         if scope not in self.scopes:
             known = ", ".join(sorted(self.scopes))
-            raise StackError(f"unknown scope {scope!r}; manifest declares {known}")
+            raise manifest_error(f"unknown scope {scope!r}; manifest declares {known}")
         return list(self.scopes[scope])
 
     def _visit(self, name: str, ordered: list[str], seen: set[str]) -> None:
         if name in ordered:
             return
         if name in seen:
-            raise StackError(f"dependency cycle through service {name!r}")
+            raise manifest_error(f"dependency cycle through service {name!r}")
         seen.add(name)
         for dependency in self.services[name].depends_on:
             self._visit(dependency, ordered, seen)
@@ -1204,7 +1585,7 @@ class Manifest:
         target_mode = mode_name or self.default_mode or next(iter(self.modes.keys()))
         if target_mode not in self.modes:
             known = ", ".join(sorted(self.modes.keys()))
-            raise StackError(
+            raise manifest_error(
                 f"unknown mode {target_mode!r}; manifest declares modes: {known}"
             )
         mode_services = dict(self.base_services)
@@ -1219,7 +1600,7 @@ class Manifest:
             for alias in s.aliases:
                 derived_scopes[alias] = [sname]
 
-        for sc_name, members in self.scopes.items():
+        for sc_name, members in self.explicit_scopes.items():
             valid_members = [m for m in members if m in mode_services]
             if valid_members:
                 derived_scopes[sc_name] = valid_members
@@ -1233,6 +1614,7 @@ class Manifest:
             modes=self.modes,
             default_mode=self.default_mode,
             active_mode=target_mode,
+            explicit_scopes=self.explicit_scopes,
         )
         for scope in derived_scopes:
             m.resolve_scope(scope)
@@ -1241,45 +1623,85 @@ class Manifest:
 
 def _parse_service(name: str, raw_spec: Any) -> Service:
     if not isinstance(raw_spec, dict):
-        raise StackError(f"service {name!r} must be a JSON object")
+        raise manifest_error(f"service {name!r} must be a JSON object")
     spec = dict(raw_spec)
     kind = spec.get("type")
     if kind not in SERVICE_TYPES:
-        raise StackError(
+        raise manifest_error(
             f"service {name!r} has unknown type {kind!r}; expected one of {SERVICE_TYPES}"
         )
 
     if "health" in spec:
         if "healthcheck_path" in spec and spec["health"] != spec["healthcheck_path"]:
-            raise StackError(
+            raise manifest_error(
                 f"service {name!r} defines conflicting 'health' and 'healthcheck_path'"
             )
         spec["healthcheck_path"] = spec.pop("health")
+
+    if "env" in spec:
+        if not isinstance(spec["env"], dict) or not all(isinstance(k, str) for k in spec["env"]):
+            raise manifest_error(f"service {name!r} 'env' must be a JSON object mapping strings to values")
+    if "env_files" in spec:
+        if not isinstance(spec["env_files"], list) or not all(isinstance(f, str) for f in spec["env_files"]):
+            raise manifest_error(f"service {name!r} 'env_files' must be a list of strings")
+    if "depends_on" in spec:
+        if not isinstance(spec["depends_on"], list) or not all(isinstance(d, str) for d in spec["depends_on"]):
+            raise manifest_error(f"service {name!r} 'depends_on' must be a list of strings")
+    if "aliases" in spec:
+        if not isinstance(spec["aliases"], list) or not all(isinstance(a, str) for a in spec["aliases"]):
+            raise manifest_error(f"service {name!r} 'aliases' must be a list of strings")
+    if "inherit" in spec:
+        if not isinstance(spec["inherit"], list) or not all(isinstance(i, str) for i in spec["inherit"]):
+            raise manifest_error(f"service {name!r} 'inherit' must be a list of strings")
+    if "healthcheck_timeout" in spec:
+        timeout = spec["healthcheck_timeout"]
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise manifest_error(
+                f"service {name!r} 'healthcheck_timeout' must be a positive finite number"
+            )
+    if "healthcheck_path" in spec and spec["healthcheck_path"] is not None:
+        health_path = spec["healthcheck_path"]
+        if not isinstance(health_path, str) or not health_path:
+            raise manifest_error(
+                f"service {name!r} 'healthcheck_path' must be a non-empty string"
+            )
+        if not health_path.startswith("/"):
+            raise manifest_error(
+                f"service {name!r} 'healthcheck_path' must start with '/'"
+            )
+    if "cwd" in spec:
+        if not isinstance(spec["cwd"], str):
+            raise manifest_error(f"service {name!r} 'cwd' must be a string")
 
     raw_cmd = spec.get("command")
     if isinstance(raw_cmd, str):
         cmd_str = raw_cmd.strip()
         if not cmd_str:
-            raise StackError(f"service {name!r} 'command' string cannot be empty")
+            raise manifest_error(f"service {name!r} 'command' string cannot be empty")
         if "\0" in cmd_str:
-            raise StackError(f"service {name!r} 'command' contains NUL characters")
+            raise manifest_error(f"service {name!r} 'command' contains NUL characters")
         try:
             tokens = shlex.split(cmd_str, comments=False, posix=True)
         except ValueError as exc:
-            raise StackError(f"service {name!r} invalid command syntax: {exc}") from None
+            raise manifest_error(f"service {name!r} invalid command syntax: {exc}") from None
         if not tokens:
-            raise StackError(f"service {name!r} 'command' cannot be empty")
+            raise manifest_error(f"service {name!r} 'command' cannot be empty")
         spec["command"] = tokens
     elif isinstance(raw_cmd, list):
         if not all(isinstance(t, str) for t in raw_cmd):
-            raise StackError(f"service {name!r} 'command' must be a list of strings")
+            raise manifest_error(f"service {name!r} 'command' must be a list of strings")
     elif raw_cmd is not None:
-        raise StackError(f"service {name!r} 'command' must be a string or list of strings")
+        raise manifest_error(f"service {name!r} 'command' must be a string or list of strings")
 
     known = {f.name for f in Service.__dataclass_fields__.values()} - {"name"}
     unknown = set(spec) - known
     if unknown:
-        raise StackError(f"service {name!r} has unknown keys: {sorted(unknown)}")
+        raise manifest_error(f"service {name!r} has unknown keys: {sorted(unknown)}")
     return Service(name=name, **spec)
 
 
@@ -1287,15 +1709,15 @@ def _validate_service_integrity(services: Mapping[str, Service]) -> None:
     for name, service in services.items():
         for dependency in service.depends_on:
             if dependency not in services:
-                raise StackError(
+                raise manifest_error(
                     f"service {name!r} depends on unknown service {dependency!r}"
                 )
         if service.type == "fd" and not (service.command or service.app):
-            raise StackError(f"service {name!r} needs a 'command' or an 'app'")
+            raise manifest_error(f"service {name!r} needs a 'command' or an 'app'")
         if service.type == "port" and not service.command:
-            raise StackError(f"service {name!r} needs a 'command'")
+            raise manifest_error(f"service {name!r} needs a 'command'")
         if service.type == "compose" and not (service.compose_file and service.compose_service):
-            raise StackError(
+            raise manifest_error(
                 f"service {name!r} needs 'compose_file' and 'compose_service'"
             )
 
@@ -1308,35 +1730,37 @@ def load_manifest(path: Path) -> Manifest:
     except OSError:
         raise StackError(f"manifest not found: {path}") from None
     except json.JSONDecodeError as exc:
-        raise StackError(f"manifest {path} is not valid JSON: {exc}") from None
+        raise manifest_error(f"manifest {path} is not valid JSON: {exc}") from None
     if not isinstance(raw, dict):
-        raise StackError(f"manifest {path} must be a JSON object")
+        raise manifest_error(f"manifest {path} must be a JSON object")
 
     project = raw.get("project")
     if not isinstance(project, str) or not project:
-        raise StackError(f"manifest {path} must declare a non-empty 'project'")
+        raise manifest_error(f"manifest {path} must declare a non-empty 'project'")
 
     declared = raw.get("services")
     raw_modes = raw.get("modes")
 
     if (declared is None or not declared) and (raw_modes is None or not raw_modes):
-        raise StackError(f"manifest {path} must declare at least one service")
+        raise manifest_error(f"manifest {path} must declare at least one service")
 
     base_services: dict[str, Service] = {}
-    if isinstance(declared, dict):
+    if declared is not None:
+        if not isinstance(declared, dict):
+            raise manifest_error(f"manifest {path} 'services' must be a JSON object")
         for name, raw_spec in declared.items():
             base_services[name] = _parse_service(name, raw_spec)
 
     modes: dict[str, dict[str, Service]] = {}
     if raw_modes is not None:
         if not isinstance(raw_modes, dict):
-            raise StackError(f"manifest {path} 'modes' must be a JSON object")
+            raise manifest_error(f"manifest {path} 'modes' must be a JSON object")
         for mode_name, mode_obj in raw_modes.items():
             if not isinstance(mode_obj, dict):
-                raise StackError(f"mode {mode_name!r} must be a JSON object")
+                raise manifest_error(f"mode {mode_name!r} must be a JSON object")
             mode_svcs_raw = mode_obj.get("services")
             if not isinstance(mode_svcs_raw, dict):
-                raise StackError(f"mode {mode_name!r} must declare a 'services' object")
+                raise manifest_error(f"mode {mode_name!r} must declare a 'services' object")
             mode_svcs = {}
             for name, raw_spec in mode_svcs_raw.items():
                 mode_svcs[name] = _parse_service(name, raw_spec)
@@ -1344,7 +1768,7 @@ def load_manifest(path: Path) -> Manifest:
 
     default_mode = raw.get("default_mode")
     if default_mode and default_mode not in modes:
-        raise StackError(f"default_mode {default_mode!r} not declared in modes: {list(modes.keys())}")
+        raise manifest_error(f"default_mode {default_mode!r} not declared in modes: {list(modes.keys())}")
 
     # Determine initial services
     if modes:
@@ -1373,24 +1797,30 @@ def load_manifest(path: Path) -> Manifest:
         derived_scopes[sname] = [sname]
         for alias in s.aliases:
             if not isinstance(alias, str) or not alias:
-                raise StackError(f"service {sname!r} has invalid alias {alias!r}")
+                raise manifest_error(f"service {sname!r} has invalid alias {alias!r}")
             if alias in initial_services and alias != sname:
-                raise StackError(
+                raise manifest_error(
                     f"alias {alias!r} for service {sname!r} conflicts with another service"
                 )
             derived_scopes[alias] = [sname]
 
+    explicit_scopes: dict[str, list[str]] = {}
     scopes_raw = raw.get("scopes")
     if scopes_raw is not None:
         if not isinstance(scopes_raw, dict):
-            raise StackError(f"manifest {path} 'scopes' must be a JSON object")
+            raise manifest_error(f"manifest {path} 'scopes' must be a JSON object")
         for scope, members in scopes_raw.items():
             if not isinstance(members, list):
-                raise StackError(f"scope {scope!r} must be a list of service names")
+                raise manifest_error(f"scope {scope!r} must be a list of service names")
             for member in members:
+                if not isinstance(member, str):
+                    raise manifest_error(
+                        f"scope {scope!r} must list service names as strings, got {member!r}"
+                    )
                 if member not in initial_services:
-                    raise StackError(f"scope {scope!r} names unknown service {member!r}")
+                    raise manifest_error(f"scope {scope!r} names unknown service {member!r}")
             derived_scopes[scope] = list(members)
+            explicit_scopes[scope] = list(members)
 
     manifest = Manifest(
         project=project,
@@ -1401,6 +1831,7 @@ def load_manifest(path: Path) -> Manifest:
         modes=modes,
         default_mode=default_mode,
         active_mode=active_mode,
+        explicit_scopes=explicit_scopes,
     )
 
     if modes:
@@ -1489,6 +1920,22 @@ def record_alive(record: Mapping[str, Any], root: Path) -> bool:
     return identity_matches(record)
 
 
+def record_status(record: Mapping[str, Any], root: Path) -> str:
+    """Return 'running', 'stopped' or 'error' for one recorded service.
+
+    A record is retained in state whenever teardown could not prove the service
+    was reclaimed, so presence in state is never evidence that it still runs.
+    'error' means the question could not be answered -- a Docker outage above
+    all -- and never that the service is gone.
+    """
+    if record.get("type") == "compose":
+        status = compose_record_status(record, root)
+        if status == "alive":
+            return "running"
+        return "error" if status == "error" else "stopped"
+    return "running" if identity_matches(record) else "stopped"
+
+
 def prune_state(state: dict[str, Any], root: Path) -> list[str]:
     """Drop records whose ownership can no longer be established. Returns their names.
 
@@ -1496,12 +1943,18 @@ def prune_state(state: dict[str, Any], root: Path) -> list[str]:
     checkout can no longer claim. That is reported loudly rather than killed: the
     port may now belong to an unrelated process.
     """
-    dropped = [
-        name
-        for name, record in list(state["services"].items())
-        if not record_alive(record, root)
-        and not (isinstance(record.get("pgid"), int) and pgid_alive(record["pgid"]))
-    ]
+    dropped = []
+    for name, record in list(state["services"].items()):
+        stype = record.get("type")
+        if stype == "compose":
+            status = compose_record_status(record, root)
+            if status == "absent":
+                dropped.append(name)
+        else:
+            is_pid_alive = identity_matches(record)
+            is_pgid_alive = isinstance(record.get("pgid"), int) and pgid_alive(record["pgid"])
+            if not is_pid_alive and not is_pgid_alive:
+                dropped.append(name)
     for name in dropped:
         record = state["services"].pop(name, None) or {}
         port = record.get("port")
@@ -1540,45 +1993,101 @@ def _start_service(
         raise StackError(f"service {service.name!r} working directory {cwd} does not exist")
     log_path = runtime / LOG_DIR_NAME / f"{service.name}.log"
 
-    if service.type == "compose":
-        return _start_compose_service(service, root, instance)
+    if service.type in ("port", "fd") and not shutil.which("lsof"):
+        raise RigError(
+            "'lsof' is required for port/fd service verification but is not found on PATH",
+            code="E_EXTERNAL_TOOL",
+            exit_code=EXIT_EXTERNAL_TOOL,
+            hint="install lsof (macOS: preinstalled; Debian/Ubuntu: 'apt install lsof')",
+        )
+
+    svc_values = dict(values)
+    svc_values["cwd"] = str(cwd)
 
     env = build_service_env(
-        service.env, service.inherit, Path(root), values, service.env_files
+        service.env, service.inherit, Path(root), svc_values, service.env_files
     )
+
+    if service.type == "compose":
+        # Compose is handed the declared environment too, so `env`, `env_files`
+        # and manifest interpolation reach the compose file and its containers
+        # instead of being silently dropped.
+        return _start_compose_service(service, root, instance, env=env)
+
     if service.type == "fd":
         raw_argv = service.command or uvicorn_argv(
-            python=str(render(service.python or sys.executable, values)),
+            python=str(render(service.python or sys.executable, svc_values)),
             app=service.app or "",
             factory=service.factory,
         )
-        record = spawn_fd_service(service.name, raw_argv, cwd, env, log_path, values=values)
+        record = spawn_fd_service(service.name, raw_argv, cwd, env, log_path, values=svc_values)
     else:
         record = spawn_port_service(
-            service.name, service.command, cwd, env, log_path, reserve_port(), values=values
+            service.name, service.command, cwd, env, log_path, reserve_port(), values=svc_values
         )
     record["log"] = str(log_path)
     record["env"] = redact(env)
+    record["depends_on"] = list(service.depends_on)
+    record["health"] = service.healthcheck_path
+    record["healthcheck_path"] = service.healthcheck_path
     return record
 
 
 def _start_compose_service(
-    service: Service, root: Path, instance: str
+    service: Service,
+    root: Path,
+    instance: str,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    """Start one Compose service, leaving no container this rig cannot account for.
+
+    ``up`` can succeed while discovery of the container or its published port
+    fails. The container is then running and untracked, so it is stopped and
+    removed here; when that cleanup itself fails the partial record travels on
+    the raised error so the caller can persist it for ``down`` or ``prune``. An
+    interrupt is treated exactly the same way: a container this rig created is
+    never left both running and unrecorded.
+
+    The Docker endpoint in force at startup -- both the host and the active
+    context -- is recorded, so every later status query and teardown reaches the
+    daemon that actually holds the container even after the machine-wide default
+    context changes.
+    """
     compose_file = Path(root) / str(service.compose_file)
-    args = ["up", "-d", "--wait", str(service.compose_service)]
-    result = run_compose(instance, Path(root), compose_file, args, service.docker_context)
-    if result.returncode != 0:
-        raise StackError(
-            f"compose could not start {service.name!r}: {result.stderr.strip() or result.stdout.strip()}"
-        )
-    ids = run_compose(
-        instance, Path(root), compose_file, ["ps", "-q", str(service.compose_service)],
-        service.docker_context, timeout=60.0,
-    )
-    container = ids.stdout.strip().splitlines()[0].strip() if ids.stdout.strip() else ""
-    port = None
-    partial_record = {
+    docker_host = os.environ.get("DOCKER_HOST")
+
+    # The declared environment is an allowlist, so the Docker client settings
+    # that decide which daemon answers are added back explicitly: a TLS or
+    # rootless setup must still reach its own daemon.
+    cmd_env: dict[str, str] | None = None
+    if env is not None:
+        cmd_env = dict(env)
+        for name in DOCKER_CLIENT_ENV_PASSTHROUGH:
+            if name not in cmd_env and name in os.environ:
+                cmd_env[name] = os.environ[name]
+
+    # Docker's own order of precedence decides which daemon holds this
+    # container, and the record must name the same one: a context the manifest
+    # declares, then the ambient ``DOCKER_CONTEXT``, then ``DOCKER_HOST``. The
+    # ambient context is read from this process's environment, never from
+    # ``cmd_env``: the declared environment is an allowlist that drops it, so
+    # `DOCKER_CONTEXT=colima rig up` would otherwise be recorded against the
+    # machine's default context and lose its container there.
+    docker_context = service.docker_context or os.environ.get("DOCKER_CONTEXT") or None
+    if docker_context is None and not docker_host:
+        # Nothing names the daemon, so the container would be reached through
+        # whichever context is active at the time -- and `docker context use`
+        # can change that at any moment. The active context is therefore named
+        # now.
+        docker_context = resolve_current_docker_context(cmd_env)
+    if docker_context:
+        # Every later query and teardown names this context with ``--context``,
+        # which Docker ranks above ``DOCKER_HOST``. Recording a host as well
+        # would name an endpoint that never decided anything and would only
+        # mislead a reader of the record.
+        docker_host = None
+
+    record: dict[str, Any] = {
         "name": service.name,
         "type": "compose",
         "pid": None,
@@ -1586,46 +2095,203 @@ def _start_compose_service(
         "instance": instance,
         "compose_file": str(compose_file),
         "compose_service": service.compose_service,
-        "docker_context": service.docker_context,
-        "container": container,
+        "docker_context": docker_context,
+        "docker_host": docker_host,
+        "container": "",
         "port": None,
         "url": None,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "depends_on": list(service.depends_on),
+        "health": service.healthcheck_path,
+        "healthcheck_path": service.healthcheck_path,
     }
-    if service.compose_port:
-        try:
-            published = run_compose(
-                instance, Path(root), compose_file,
-                ["port", str(service.compose_service), str(service.compose_port)],
-                service.docker_context, timeout=60.0,
-            )
-            port = parse_compose_port(published.stdout)
-        except Exception as exc:
-            _stop_record(partial_record, root)
-            raise StackError(
-                f"compose failed to resolve port for {service.name!r}: {exc}"
+
+    if cmd_env is not None:
+        # A compose file may declare a variable as required -- `${VAR:?message}`
+        # -- and Compose then refuses every later `ps` and `stop` while that
+        # variable is undefined, leaving its own container beyond its reach. The
+        # environment that satisfied the file at startup is therefore recorded,
+        # with secret-looking values masked exactly as they are for a process
+        # service: a status query and a teardown need each variable to exist,
+        # not to carry its real value.
+        record["compose_env"] = redact(cmd_env)
+
+    def _compose(args: list[str], timeout: float = 180.0):
+        return run_compose(
+            instance,
+            Path(root),
+            compose_file,
+            args,
+            docker_context,
+            timeout=timeout,
+            env=cmd_env,
+            docker_host=docker_host,
+        )
+
+    def _cleanup_partial() -> bool:
+        """Return True only when the partially started container is gone.
+
+        An interrupt during the cleanup itself is caught and reported as an
+        incomplete reclaim: the caller must be able to record the container it
+        could not remove rather than lose it.
+        """
+        removed = True
+        for args in (["stop", str(service.compose_service)], ["rm", "-f", str(service.compose_service)]):
+            try:
+                result = _compose(args, timeout=30.0)
+            except BaseException:  # noqa: BLE001 - an interrupt must not lose the container
+                return False
+            if result.returncode != 0:
+                removed = False
+        return removed
+
+    def _stranded(message: str) -> RigError:
+        """Publish a record for a container this rig created but cannot reclaim."""
+        return RigError(
+            f"{message}; the partial container could not be removed and stays recorded",
+            code="E_COMPOSE_FAILED",
+            exit_code=EXIT_OP_FAILED,
+            hint="run 'rig down' or 'rig prune --force' to reclaim it",
+            details={"partial_record": record},
+        )
+
+    def _fail(message: str) -> RigError:
+        if _cleanup_partial():
+            return RigError(message, code="E_COMPOSE_FAILED", exit_code=EXIT_OP_FAILED)
+        return _stranded(message)
+
+    try:
+        result = _compose(["up", "-d", "--no-deps", "--wait", str(service.compose_service)])
+    except (RigError, OSError) as exc:
+        # `up` can time out with containers already created, so reclaim them.
+        # A reclaim that fails must publish the record: the timeout itself
+        # carries no ownership evidence, and the container would be stranded.
+        if not _cleanup_partial():
+            raise _stranded(f"compose could not start {service.name!r}: {exc}") from exc
+        raise
+    except BaseException as exc:
+        # `--wait` blocks until the container reports healthy, so a `Ctrl-C`
+        # lands here with that container already created and not yet recorded.
+        # It is reclaimed, or recorded so a later teardown can reclaim it; only
+        # a proven reclaim lets the interrupt travel on untouched.
+        if not _cleanup_partial():
+            raise _stranded(
+                f"the start of {service.name!r} was interrupted by {type(exc).__name__}"
             ) from exc
-    partial_record["port"] = port
-    partial_record["url"] = f"http://127.0.0.1:{port}" if port else None
-    return partial_record
+        raise
+    if result.returncode != 0:
+        raise _fail(
+            f"compose could not start {service.name!r}: "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+    # `up` returned, so a container now exists. Every failure from here on --
+    # an interrupt above all -- must either reclaim that container or record it.
+    try:
+        try:
+            ids = _compose(["ps", "-q", str(service.compose_service)], timeout=60.0)
+        except (RigError, OSError) as exc:
+            raise _fail(f"compose failed to list containers for {service.name!r}: {exc}") from exc
+        if ids.returncode != 0:
+            raise _fail(
+                f"compose failed to list containers for {service.name!r}: "
+                f"{ids.stderr.strip() or ids.stdout.strip()}"
+            )
+        record["container"] = (
+            ids.stdout.strip().splitlines()[0].strip() if ids.stdout.strip() else ""
+        )
+        if not record["container"]:
+            raise _fail(f"compose reported no container for {service.name!r}")
+
+        if service.compose_port:
+            try:
+                published = _compose(
+                    ["port", str(service.compose_service), str(service.compose_port)],
+                    timeout=60.0,
+                )
+                if published.returncode != 0:
+                    raise StackError(published.stderr.strip() or published.stdout.strip() or "no output")
+                port = parse_compose_port(published.stdout)
+            except Exception as exc:
+                raise _fail(
+                    f"compose failed to resolve port for {service.name!r}: {exc}"
+                ) from exc
+            record["port"] = port
+            record["url"] = f"http://127.0.0.1:{port}"
+    except RigError:
+        # Already handled: cleanup was attempted, and the record travels on the
+        # error whenever that cleanup could not finish.
+        raise
+    except BaseException as exc:
+        # A `KeyboardInterrupt` or `SystemExit` between `up` and a complete
+        # record: reclaim the container, or record it and let the caller persist
+        # it. Only a proven reclaim lets the interrupt travel on untouched.
+        if not _cleanup_partial():
+            raise _stranded(
+                f"discovery for {service.name!r} was interrupted by {type(exc).__name__}"
+            ) from exc
+        raise
+    return record
 
 
-def _stop_record(record: Mapping[str, Any], root: Path) -> str:
+def _stop_record(record: Mapping[str, Any], root: Path, remove: bool = True) -> str:
+    """Stop one recorded service and, by default, reclaim its container outright.
+
+    Every caller drops the ownership record once this reports success, and a
+    Compose ``stop`` leaves an exited container behind, so a record dropped after
+    a mere stop would strand its container beyond the reach of every later
+    prune. A caller that keeps its record can pass ``remove=False``. Volumes are
+    never removed, so local data survives either path.
+
+    Compose refusing the teardown must not end it. A compose file that declares
+    a required variable cannot be evaluated while that variable is undefined, so
+    Compose can never reclaim the container it started; Docker holds that
+    container and its Compose labels and finishes the job without the file.
+    """
     if record.get("type") == "compose":
         status = compose_record_status(record, root)
         if status == "absent":
             return "stale"
         if status == "error":
             return "failed"
-        result = run_compose(
-            str(record["instance"]),
-            Path(root),
-            Path(str(record["compose_file"])),
-            # Volumes are preserved: an ordinary `down` must not destroy local data.
-            ["stop", str(record["compose_service"])],
-            record.get("docker_context"),
-        )
-        return "terminated" if result.returncode == 0 else "failed"
+        if not compose_file_present(record, root):
+            # The checkout is gone, so Compose cannot be scoped to it. Docker
+            # still holds the container and can stop and reclaim it by ID.
+            return docker_record_stop(record, remove)
+        instance = str(record["instance"])
+        compose_file = Path(str(record["compose_file"]))
+        compose_service = str(record["compose_service"])
+        context, docker_host = record_docker_endpoint(record)
+        compose_env = record_compose_env(record)
+
+        def _compose_teardown(args: list[str]) -> bool:
+            """Return ``True`` only when Compose itself carried out one teardown step."""
+            try:
+                result = run_compose(
+                    instance, Path(root), compose_file, args, context,
+                    env=compose_env, docker_host=docker_host,
+                )
+            except (StackError, RigError):
+                return False
+            return result.returncode == 0
+
+        # Volumes are preserved throughout: an ordinary `down` must not destroy local data.
+        if remove or not record.get("container"):
+            # Either the caller is about to drop the record, or no container ID
+            # was ever recorded, so nothing else can track this container. It is
+            # reclaimed by service name and removed outright.
+            for args in (["stop", compose_service], ["rm", "-f", compose_service]):
+                if not _compose_teardown(args):
+                    # Compose refused, and a compose file it cannot evaluate --
+                    # one declaring a required variable above all -- it will
+                    # never evaluate. Docker holds the container and its Compose
+                    # labels, needs no compose file, and reclaims every replica
+                    # of the service, so the reclaim finishes there.
+                    return docker_record_stop(record, remove)
+            return "terminated"
+        if _compose_teardown(["stop", compose_service]):
+            return "terminated"
+        return docker_record_stop(record, remove)
     return terminate_record(record, TEARDOWN_TIMEOUT_SECS)
 
 
@@ -1637,6 +2303,22 @@ def is_service_verifiable_alive(record: Mapping[str, Any], root: Path) -> bool:
     if not isinstance(pid, int):
         return False
     return pid_alive(pid) and identity_matches(record)
+
+
+def is_service_active_in_mode(record: Mapping[str, Any], root: Path) -> bool:
+    """Return ``True`` when a recorded service still occupies the active mode.
+
+    A Compose service holds its ports and container name until Docker reports it
+    gone, so an inspection error keeps the mode occupied. A process service is
+    held by its PID or by its surviving process group.
+    """
+    if record.get("type") == "compose":
+        return compose_record_status(record, root) != "absent"
+    return (
+        is_service_verifiable_alive(record, root)
+        or (isinstance(record.get("pgid"), int) and pgid_alive(record["pgid"]))
+        or (isinstance(record.get("pid"), int) and pid_alive(record["pid"]))
+    )
 
 
 def cmd_up(
@@ -1655,6 +2337,10 @@ def cmd_up(
         manifest = raw_manifest
         selected_mode = "default"
 
+    # The scope is validated first: an unknown scope is a usage error and must
+    # never be discovered after a mode switch has already torn the stack down.
+    order = manifest.resolve_scope(scope)
+
     root = Path(root).resolve()
     runtime = ensure_runtime_dir(root)
     instance = instance_id(manifest.project, root)
@@ -1669,8 +2355,12 @@ def cmd_up(
         state["boot_id"] = get_boot_id()
 
         current_mode = state.get("mode")
+        # A dead leader PID does not mean the service is gone: its process group
+        # or the PID itself may still hold the ports the other mode needs.
         active_count = sum(
-            1 for rec in state.get("services", {}).values() if is_service_verifiable_alive(rec, root)
+            1
+            for rec in state.get("services", {}).values()
+            if is_service_active_in_mode(rec, root)
         )
         if current_mode and current_mode != selected_mode and active_count > 0:
             if not switch:
@@ -1686,10 +2376,42 @@ def cmd_up(
                     f"  switching mode from {current_mode!r} to {selected_mode!r}: "
                     f"stopping active services..."
                 )
-            for sname, srec in list(state["services"].items()):
-                _stop_record(srec, root)
-                state["services"].pop(sname, None)
+            services = dict(state.get("services", {}))
+            stop_order = reverse_dependency_order(services)
+            switch_failed = []
+            failed_services: set[str] = set()
+            for sname in stop_order:
+                deps_failed = [
+                    d for d in failed_services
+                    if sname in services[d].get("depends_on", [])
+                ]
+                if deps_failed:
+                    switch_failed.append(f"{sname}: refused (needed by {', '.join(deps_failed)})")
+                    failed_services.add(sname)
+                    continue
+                srec = services[sname]
+                outcome = _stop_record(srec, root)
+                if outcome in ("terminated", "killed", "stale"):
+                    state["services"].pop(sname, None)
+                else:
+                    failed_services.add(sname)
+                    switch_failed.append(f"{sname}: {outcome}")
+
             write_state(state_path, state)
+            if switch_failed:
+                code_val = EXIT_REFUSED if any("refused" in f for f in switch_failed) else EXIT_OP_FAILED
+                err = RigError(
+                    f"failed to stop active mode {current_mode!r} during switch: {', '.join(switch_failed)}",
+                    code="E_SWITCH_FAILED",
+                    exit_code=code_val,
+                    hint="inspect running services with 'rig status' or stop them manually before switching modes",
+                )
+                if as_json:
+                    raise err
+                print(f"rig: error [{err.code}]: {err.message}", file=sys.stderr)
+                if err.hint:
+                    print(f"  hint: {err.hint}", file=sys.stderr)
+                return err.exit_code
 
         state["mode"] = selected_mode
         for name in prune_state(state, root):
@@ -1697,7 +2419,6 @@ def cmd_up(
                 print(f"  pruned stale record for {name}")
         write_state(state_path, state)
 
-        order = manifest.resolve_scope(scope)
         # If any dependency is down or missing, stop running dependents so they re-link.
         # Affected dependents must be stopped in reverse dependency order (dependents before dependencies).
         missing = [
@@ -1706,25 +2427,34 @@ def cmd_up(
             if name not in state["services"]
             or not is_service_verifiable_alive(state["services"][name], root)
         ]
+        # Consumers are collected from the manifest *and* from the recorded state:
+        # a service the current mode or scope no longer declares can still be
+        # running against the port the restart is about to move.
         affected: set[str] = set()
         queue = list(missing)
+        seen = set(missing)
         while queue:
             curr = queue.pop(0)
-            for dep in manifest.dependents(curr):
-                if dep in state["services"] and dep not in affected:
+            for dep in _consumers_of(curr, state["services"], manifest):
+                if dep in state["services"]:
                     affected.add(dep)
+                if dep not in seen:
+                    seen.add(dep)
                     queue.append(dep)
 
         if affected:
-            stop_order = [
-                s
-                for s in manifest.resolve_services(list(affected))
-                if s in state["services"]
-            ]
-            stop_order.reverse()
+            stop_order = reverse_dependency_order(
+                {
+                    name: {"depends_on": sorted(_merged_depends_on(name, state["services"][name], manifest))}
+                    for name in affected
+                }
+            )
             failed_stops: set[str] = set()
             for dep_name in stop_order:
-                if any(child in failed_stops for child in manifest.dependents(dep_name)):
+                if any(
+                    child in failed_stops
+                    for child in _consumers_of(dep_name, state["services"], manifest)
+                ):
                     if not as_json:
                         print(
                             f"  {dep_name}: preserving because dependent failed to stop",
@@ -1747,37 +2477,99 @@ def cmd_up(
                     state["services"].pop(dep_name, None)
                     write_state(state_path, state)
             if failed_stops:
-                return EXIT_OP_FAILED
-            order = manifest.resolve_services(order + list(affected))
+                err = RigError(
+                    f"cleanup failed for dependent services: {', '.join(failed_stops)}",
+                    code="E_CLEANUP_FAILED",
+                    exit_code=EXIT_OP_FAILED,
+                )
+                if as_json:
+                    raise err
+                return err.exit_code
+            restartable = [name for name in affected if name in manifest.services]
+            for name in sorted(affected - set(restartable)):
+                if not as_json:
+                    print(
+                        f"  {name}: stopped and dropped from state; "
+                        f"the active manifest no longer declares it",
+                        file=sys.stderr,
+                    )
+            order = manifest.resolve_services(order + restartable)
 
         started: list[str] = []
         for name in order:
             service = manifest.services[name]
             existing = state["services"].get(name)
-            if existing is not None:
-                if not is_service_verifiable_alive(existing, root):
-                    if not as_json:
-                        print(
-                            f"  {name}: recorded in state but not verifiable or running; cannot proceed",
-                            file=sys.stderr,
-                        )
-                    _rollback(state, state_path, started, root, manifest)
-                    return EXIT_OP_FAILED
+            if existing is not None and is_service_verifiable_alive(existing, root):
                 if not as_json:
                     print(f"  {name}: already running on {existing.get('url') or 'n/a'}")
                 continue
+            if existing is not None:
+                # `name` is scheduled to start, so a record that is merely stopped
+                # is not a conflict: it is exactly what this start replaces. An
+                # exited Compose container is removed first so the new one cannot
+                # collide with it. Only a reclaim this rig cannot complete is
+                # fatal, and it keeps the record for `down` or `prune` to retry.
+                if not as_json:
+                    print(f"  {name}: recorded but not running; reclaiming before start")
+                outcome = _stop_record(existing, root, remove=True)
+                if outcome not in ("terminated", "killed", "stale"):
+                    _rollback(state, state_path, started, root, manifest)
+                    err = RigError(
+                        f"service {name!r} is recorded in state and could not be reclaimed "
+                        f"before start ({outcome}); cannot proceed",
+                        code="E_SERVICE_UNHEALTHY",
+                        exit_code=EXIT_OP_FAILED,
+                        hint="run 'rig down' to clear stale services, or 'rig status' to inspect",
+                    )
+                    if as_json:
+                        raise err
+                    print(f"rig: error [{err.code}]: {err.message}", file=sys.stderr)
+                    if err.hint:
+                        print(f"  hint: {err.hint}", file=sys.stderr)
+                    return err.exit_code
+                state["services"].pop(name, None)
+                write_state(state_path, state)
             try:
                 record = _start_with_retry(
                     service, root, runtime, instance, state, state_path
                 )
-            except StackError as exc:
+            except (StackError, RigError) as exc:
+                _rollback(state, state_path, started, root, manifest)
+                if as_json:
+                    if isinstance(exc, RigError):
+                        raise
+                    raise RigError(
+                        f"failed to start {name}: {exc}",
+                        code="E_START_FAILED",
+                        exit_code=EXIT_OP_FAILED,
+                    ) from None
+                if isinstance(exc, RigError):
+                    print(f"rig: error [{exc.code}]: {exc.message}", file=sys.stderr)
+                    return exc.exit_code
                 if not as_json:
                     print(f"  {name}: {exc}", file=sys.stderr)
-                _rollback(state, state_path, started, root, manifest)
                 return EXIT_OP_FAILED
+            except BaseException:
+                # `KeyboardInterrupt` and `SystemExit`: every service started so
+                # far, and any partial container the failure published, is
+                # written to state before the interrupt travels on. Nothing is
+                # rolled back here -- a reclaim needs further subprocess work
+                # that the same interrupt would cut short, and a dropped record
+                # would strand whatever it owns.
+                write_state(state_path, state)
+                raise
             if record is None:
                 _rollback(state, state_path, started, root, manifest)
-                return EXIT_OP_FAILED
+                err = RigError(
+                    f"service {name!r} failed to reach healthy state after start attempts",
+                    code="E_START_TIMEOUT",
+                    exit_code=EXIT_OP_FAILED,
+                    hint=f"check service logs in .local-run/logs/{name}.log",
+                )
+                if as_json:
+                    raise err
+                print(f"rig: error [{err.code}]: {err.message}", file=sys.stderr)
+                return err.exit_code
             started.append(name)
             if not as_json:
                 print(f"  {name}: up on {record.get('url') or 'n/a'}")
@@ -1819,7 +2611,18 @@ def _start_with_retry(
     attempts = PORT_RETRY_ATTEMPTS if service.type == "port" else 1
     for attempt in range(1, attempts + 1):
         values = _values_for(state, root, instance)
-        record = _start_service(service, root, runtime, instance, values)
+        try:
+            record = _start_service(service, root, runtime, instance, values)
+        except BaseException as exc:
+            # A start that leaked something this rig could not clean up publishes
+            # the evidence, so `down` and `prune` can still reach it. An
+            # interrupt takes the same path: the record is written before the
+            # exception travels on.
+            partial = exc.details.get("partial_record") if isinstance(exc, RigError) else None
+            if isinstance(partial, dict):
+                state["services"][service.name] = partial
+                write_state(state_path, state)
+            raise
         # State is published before readiness is confirmed so an interrupted startup
         # still leaves ownership evidence for the next `down`.
         state["services"][service.name] = record
@@ -1935,6 +2738,73 @@ def _rollback(
         write_state(state_path, state)
 
 
+def record_depends_on(record: Mapping[str, Any]) -> list[str]:
+    """Return the dependencies a state record declares, ignoring malformed entries."""
+    raw = record.get("depends_on")
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    seen: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item not in seen:
+            seen.append(item)
+    return seen
+
+
+def _merged_depends_on(
+    name: str, record: Mapping[str, Any], manifest: Manifest | None = None
+) -> set[str]:
+    """Return every dependency of ``name`` known to the record or the manifest."""
+    deps = set(record_depends_on(record))
+    if manifest is not None and name in manifest.services:
+        deps.update(manifest.services[name].depends_on)
+    return deps - {name}
+
+
+def _consumers_of(
+    name: str,
+    services: Mapping[str, Mapping[str, Any]],
+    manifest: Manifest | None = None,
+) -> set[str]:
+    """Return every service that depends on ``name``, recorded or declared."""
+    consumers = {
+        other
+        for other, record in services.items()
+        if name in _merged_depends_on(other, record, manifest)
+    }
+    if manifest is not None:
+        consumers.update(manifest.dependents(name))
+    return consumers - {name}
+
+
+def reverse_dependency_order(services: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Compute reverse topological order (dependents before dependencies) for stopping."""
+    in_degree: dict[str, int] = {k: 0 for k in services}
+    dependents_map: dict[str, set[str]] = {k: set() for k in services}
+
+    for name, rec in services.items():
+        # A duplicate entry must not raise the in-degree twice: the decrement below
+        # happens once per edge, so a double count would strand the dependency.
+        deps = {d for d in record_depends_on(rec) if d in services and d != name}
+        for d in deps:
+            dependents_map[name].add(d)
+            in_degree[d] += 1
+
+    queue = [k for k, deg in in_degree.items() if deg == 0]
+    order: list[str] = []
+    while queue:
+        curr = queue.pop(0)
+        order.append(curr)
+        for dep in dependents_map[curr]:
+            in_degree[dep] -= 1
+            if in_degree[dep] == 0:
+                queue.append(dep)
+
+    for k in services:
+        if k not in order:
+            order.append(k)
+    return order
+
+
 def _stop_instance(inst_dir: Path) -> dict[str, Any]:
     lock_file = inst_dir / LOCK_FILE_NAME
     state_file = inst_dir / STATE_FILE_NAME
@@ -1944,15 +2814,31 @@ def _stop_instance(inst_dir: Path) -> dict[str, Any]:
         state = read_state(state_file)
         root_str = state.get("root")
         root_path = Path(root_str).resolve() if root_str else inst_dir
+        services = dict(state.get("services", {}))
+        stop_order = reverse_dependency_order(services)
         stopped = []
         failed = []
-        for name, record in list(state.get("services", {}).items()):
-            outcome = _stop_record(record, root_path)
+        failed_services: set[str] = set()
+
+        for name in stop_order:
+            rec = services[name]
+            deps_failed = [
+                d for d in failed_services
+                if name in services[d].get("depends_on", [])
+            ]
+            if deps_failed:
+                failed.append(f"{name}: refused (needed by running dependent {', '.join(deps_failed)})")
+                failed_services.add(name)
+                continue
+
+            outcome = _stop_record(rec, root_path)
             if outcome in ("terminated", "killed", "stale"):
                 state["services"].pop(name, None)
                 stopped.append(name)
             else:
+                failed_services.add(name)
                 failed.append(f"{name}: {outcome}")
+
         state["generation"] = int(state.get("generation", 0)) + 1
         write_state(state_file, state)
         return {
@@ -1995,7 +2881,9 @@ def cmd_down(
                 for fail in res.get("failed", []):
                     print(f"    failed: {fail}", file=sys.stderr)
         if as_json:
-            print_json_envelope("down", {"instances": results, "all": True})
+            print_json_envelope(
+                "down", {"instances": results, "all": True}, ok=not any_failed
+            )
         return EXIT_OP_FAILED if any_failed else EXIT_OK
 
     if target:
@@ -2035,7 +2923,7 @@ def cmd_down(
             )
         res = _stop_instance(matched_dirs[0])
         if as_json:
-            print_json_envelope("down", res)
+            print_json_envelope("down", res, ok=not res.get("failed"))
         else:
             stopped_str = ", ".join(res["stopped"]) or "none"
             print(f"  {res['instance']} ({res['project']}): stopped {stopped_str}")
@@ -2063,11 +2951,18 @@ def cmd_down(
         state = read_state(state_path)
         active_mode = state.get("mode")
         manifest = raw_manifest.for_mode(active_mode) if raw_manifest.modes else raw_manifest
-
-        targets = manifest.teardown_scope(scope)
+        targets = reverse_dependency_order(
+            {
+                name: {"depends_on": sorted(_merged_depends_on(name, state["services"].get(name, {}), manifest))}
+                for name in manifest.teardown_scope(scope)
+            }
+        )
         blocked: list[str] = []
         for name in targets:
-            for dependent in manifest.dependents(name):
+            # State is consulted as well as the manifest: a service started in
+            # another mode, or since dropped from the manifest, still needs its
+            # dependency.
+            for dependent in _consumers_of(name, state["services"], manifest):
                 if dependent in state["services"] and dependent not in targets:
                     blocked.append(f"{name} is still needed by running service {dependent}")
         if blocked:
@@ -2075,13 +2970,13 @@ def cmd_down(
                 raise RigError(
                     "; ".join(blocked),
                     code="E_REFUSED",
-                    exit_code=EXIT_USAGE,
+                    exit_code=EXIT_REFUSED,
                     hint="stop the dependent service first, or use --scope full",
                 )
             for message in blocked:
                 print(f"  refused: {message}", file=sys.stderr)
             print("  stop the dependent service first, or use --scope full", file=sys.stderr)
-            return EXIT_OP_FAILED
+            return EXIT_REFUSED
 
         failures: list[str] = []
         failed_services: set[str] = set()
@@ -2089,7 +2984,7 @@ def cmd_down(
         for name in targets:
             dependents_failed = [
                 dep
-                for dep in manifest.dependents(name)
+                for dep in _consumers_of(name, state["services"], manifest)
                 if dep in failed_services or dep in state["services"]
             ]
             if dependents_failed:
@@ -2139,6 +3034,7 @@ def cmd_down(
                 "stopped": stopped_names,
                 "failures": failures,
             },
+            ok=not failures,
         )
     return EXIT_OP_FAILED if failures else EXIT_OK
 
@@ -2195,9 +3091,13 @@ def _print_status(manifest: Manifest, state: Mapping[str, Any], root: Path) -> N
         if record is None:
             print(f"  {name.ljust(width)}  stopped")
             continue
+        # A retained record is not proof of a running service, so the state is
+        # derived rather than assumed: a stopped or unreachable service must
+        # never be reported as running.
+        status = record_status(record, root)
         health = ""
         service = manifest.services[name]
-        if service.healthcheck_path and record.get("port"):
+        if status == "running" and service.healthcheck_path and record.get("port"):
             ready = wait_for_http(
                 int(record["port"]),
                 service.healthcheck_path,
@@ -2209,7 +3109,7 @@ def _print_status(manifest: Manifest, state: Mapping[str, Any], root: Path) -> N
         pid = record.get("pid")
         pid_text = f"pid={pid}" if pid else f"container={str(record.get('container'))[:12]}"
         print(
-            f"  {name.ljust(width)}  running  {pid_text}  "
+            f"  {name.ljust(width)}  {status.ljust(7)}  {pid_text}  "
             f"{record.get('url') or 'no port'}{health}"
         )
 
@@ -2223,7 +3123,7 @@ def cmd_ps(health: bool = False, as_json: bool = False) -> int:
             print("No active or recorded rig instances found.")
         return EXIT_OK
 
-    results = []
+    instances_data: list[dict[str, Any]] = []
     for inst_dir in sorted(instances_dir.iterdir()):
         if not inst_dir.is_dir():
             continue
@@ -2265,7 +3165,7 @@ def cmd_ps(health: bool = False, as_json: bool = False) -> int:
 
             health_status = None
             if health and is_alive and port:
-                health_path = srec.get("healthcheck_path") or "/"
+                health_path = srec.get("healthcheck_path") or srec.get("health") or "/"
                 h_ok = wait_for_http(int(port), health_path, timeout=1.0, pid=pid, pgid=srec.get("pgid"))
                 health_status = "healthy" if h_ok else "unhealthy"
 
@@ -2278,23 +3178,23 @@ def cmd_ps(health: bool = False, as_json: bool = False) -> int:
                 "health": health_status,
             }
 
-        if total_count == 0:
-            status = "stopped"
-        elif running_count == total_count:
-            status = "running"
+        # A checkout that is gone outranks whatever its services still report:
+        # nothing can be managed from a root that no longer exists. Below that,
+        # a stack that is only half up must not read as `running`.
+        if not root_exists:
+            instance_status = "orphaned"
+        elif total_count > 0 and running_count == total_count:
+            instance_status = "running"
         elif running_count > 0:
-            status = "partial"
+            instance_status = "partial"
         else:
-            status = "stopped"
+            instance_status = "stopped"
 
-        if running_count > 0 and not root_exists:
-            status = "orphaned"
-
-        results.append({
+        instances_data.append({
             "instance": instance_id_val,
             "project": project,
             "mode": mode,
-            "status": status,
+            "status": instance_status,
             "locked": locked,
             "root": root_str,
             "root_exists": root_exists,
@@ -2304,16 +3204,17 @@ def cmd_ps(health: bool = False, as_json: bool = False) -> int:
         })
 
     if as_json:
-        print_json_envelope("ps", {"instances": results})
+        print_json_envelope("ps", {"instances": instances_data})
         return EXIT_OK
 
-    if not results:
+    if not instances_data:
         print("No active or recorded rig instances found.")
         return EXIT_OK
 
-    # Format table output
-    print(f"{'PROJECT':<16} {'INSTANCE':<22} {'MODE':<10} {'STATUS':<10} {'SERVICES':<25} {'ROOT'}")
-    for item in results:
+    print(
+        f"{'PROJECT':<16} {'INSTANCE':<22} {'MODE':<10} {'STATUS':<10} {'SERVICES':<25} {'ROOT'}"
+    )
+    for item in instances_data:
         svc_summary = ", ".join(
             f"{s}:{info['status']}" for s, info in item["services"].items()
         ) or "none"
@@ -2333,50 +3234,146 @@ def cmd_ps(health: bool = False, as_json: bool = False) -> int:
     return EXIT_OK
 
 
+def _instance_live_services(
+    services: Mapping[str, Mapping[str, Any]], root: Path
+) -> dict[str, Mapping[str, Any]]:
+    """Return the recorded services that still show any sign of life."""
+    live: dict[str, Mapping[str, Any]] = {}
+    for name, record in services.items():
+        if record.get("type") == "compose":
+            if compose_record_status(record, root) != "absent":
+                live[name] = record
+            continue
+        pid = record.get("pid")
+        pgid = record.get("pgid")
+        if (isinstance(pid, int) and pid_alive(pid) and identity_matches(record)) or (
+            isinstance(pgid, int) and pgid_alive(pgid)
+        ):
+            live[name] = record
+    return live
+
+
+def _force_stop_instance(
+    state: dict[str, Any], state_file: Path, root: Path
+) -> list[str]:
+    """Stop every recorded service of one instance, dependents before dependencies.
+
+    A dependency is preserved whenever its dependent refused to stop: killing it
+    first would break the very consumer that is still running against it.
+    """
+    services = state.get("services", {})
+    failures: list[str] = []
+    failed_services: set[str] = set()
+
+    for name in reverse_dependency_order(services):
+        record = services.get(name)
+        if record is None:
+            continue
+        blocking = sorted(
+            dependent
+            for dependent in _consumers_of(name, services)
+            if dependent in failed_services
+        )
+        if blocking:
+            failures.append(f"{name}: preserved because {', '.join(blocking)} is still running")
+            failed_services.add(name)
+            continue
+        # The record is dropped below, so the container must go with it: a
+        # merely stopped container no record points at is unreclaimable.
+        outcome = _stop_record(record, root, remove=True)
+        if outcome in ("terminated", "killed", "stale"):
+            services.pop(name, None)
+        else:
+            failures.append(f"{name}: {outcome}")
+            failed_services.add(name)
+
+    state["generation"] = int(state.get("generation", 0)) + 1
+    write_state(state_file, state)
+    return failures
+
+
+def _clear_instance_dir(inst_dir: Path) -> bool:
+    """Delete an instance's contents while keeping the lock inode intact.
+
+    ``checkout.lock`` is deliberately left in place: every command contends for
+    that one inode, so unlinking it would let a waiting process acquire a lock on
+    a file nobody else can see. Returns True when anything was removed.
+    """
+    removed = False
+    for item in inst_dir.iterdir():
+        if item.name == LOCK_FILE_NAME:
+            continue
+        if item.is_dir() and not item.is_symlink():
+            shutil.rmtree(item, ignore_errors=True)
+        else:
+            with contextlib.suppress(OSError):
+                item.unlink()
+        removed = True
+    return removed
+
+
 def cmd_prune(force: bool = False, as_json: bool = False) -> int:
     instances_dir = get_instances_dir()
     if not instances_dir.is_dir():
         if as_json:
-            print_json_envelope("prune", {"pruned": []})
+            print_json_envelope("prune", {"pruned": [], "failed": []})
         else:
             print("No instances to prune.")
         return EXIT_OK
 
-    pruned = []
+    pruned: list[str] = []
+    failed: list[dict[str, Any]] = []
     for inst_dir in sorted(instances_dir.iterdir()):
         if not inst_dir.is_dir():
             continue
         lock_file = inst_dir / LOCK_FILE_NAME
         state_file = inst_dir / STATE_FILE_NAME
-        if is_locked(lock_file):
-            continue
-        state = read_state(state_file) if state_file.is_file() else {}
-        services = state.get("services", {})
-        root_str = state.get("root")
-        root_exists = Path(root_str).is_dir() if root_str else False
 
-        has_alive = False
-        for srec in services.values():
-            stype = srec.get("type")
-            if stype == "compose":
-                if compose_record_alive(srec, Path(root_str) if root_exists else inst_dir):
-                    has_alive = True
-                    break
-            else:
-                pid = srec.get("pid")
-                if isinstance(pid, int) and pid_alive(pid) and identity_matches(srec):
-                    has_alive = True
-                    break
-
-        if has_alive:
+        lock_fd = None
+        try:
+            lock_fd = os.open(
+                str(lock_file),
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            if lock_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(lock_fd)
             continue
 
-        if force or not root_exists or len(services) == 0:
-            shutil.rmtree(inst_dir, ignore_errors=True)
-            pruned.append(inst_dir.name)
+        try:
+            state = read_state(state_file) if state_file.is_file() else {}
+            services = state.get("services", {})
+            root_str = state.get("root")
+            root_exists = Path(root_str).is_dir() if root_str else False
+            ref_root = Path(root_str) if root_exists else inst_dir
+
+            live = _instance_live_services(services, ref_root)
+            if live and not force:
+                continue
+            if live:
+                state.setdefault("services", services)
+                failures = _force_stop_instance(state, state_file, ref_root)
+                if failures:
+                    failed.append({"instance": inst_dir.name, "failed": failures})
+                    continue
+                services = state.get("services", {})
+
+            if not (force or not root_exists or len(services) == 0):
+                continue
+            if _clear_instance_dir(inst_dir):
+                pruned.append(inst_dir.name)
+        finally:
+            if lock_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(lock_fd)
 
     if as_json:
-        print_json_envelope("prune", {"pruned": pruned})
+        print_json_envelope(
+            "prune", {"pruned": pruned, "failed": failed}, ok=not failed
+        )
     else:
         if pruned:
             print(f"Pruned {len(pruned)} dead instance(s):")
@@ -2384,7 +3381,26 @@ def cmd_prune(force: bool = False, as_json: bool = False) -> int:
                 print(f"  - {name}")
         else:
             print("No instances eligible for pruning.")
-    return EXIT_OK
+        for entry in failed:
+            for message in entry["failed"]:
+                print(f"  failed: {entry['instance']}: {message}", file=sys.stderr)
+    return EXIT_OP_FAILED if failed else EXIT_OK
+
+
+def _resolve_executable(spec: str, cwd: Path) -> Path | None:
+    """Return the file a spawn would execute for ``spec``, or None when absent.
+
+    A spec that contains a separator is resolved against the service working
+    directory, because that is the directory the child process is spawned in.
+    A bare name is looked up on PATH, exactly as ``execvp`` would.
+    """
+    if os.sep in spec:
+        candidate = Path(spec)
+        if not candidate.is_absolute():
+            candidate = cwd / candidate
+        return candidate if candidate.is_file() else None
+    found = shutil.which(spec)
+    return Path(found) if found else None
 
 
 def cmd_check(
@@ -2427,24 +3443,43 @@ def cmd_check(
                     "message": f"working directory '{svc.cwd}' does not exist",
                 })
             if svc.type in ("fd", "port"):
+                if not shutil.which("lsof"):
+                    issues.append({
+                        "level": "error",
+                        "check": f"{mode_tag} service:{sname}:lsof".strip(),
+                        "message": "'lsof' binary not found on PATH (required for port listener verification)",
+                    })
+                render_values = {"root": str(root), "cwd": str(cwd), "python": sys.executable}
                 cmd = svc.command
                 if cmd:
-                    bin_str = str(render(cmd[0], {"root": str(root), "cwd": str(cwd), "python": sys.executable}))
-                    bin_path = Path(bin_str)
-                    if not (shutil.which(bin_str) or bin_path.is_file() or (cwd / bin_path).is_file() or (root / bin_path).is_file()):
+                    bin_str = str(render(cmd[0], render_values))
+                    actual_bin = _resolve_executable(bin_str, cwd)
+                    if actual_bin is None:
                         issues.append({
                             "level": "error",
                             "check": f"{mode_tag} service:{sname}:binary".strip(),
-                            "message": f"executable '{cmd[0]}' not found on PATH, in cwd, or at target path",
+                            "message": f"executable '{cmd[0]}' not found on PATH or under '{svc.cwd}'",
+                        })
+                    elif not os.access(actual_bin, os.X_OK):
+                        issues.append({
+                            "level": "error",
+                            "check": f"{mode_tag} service:{sname}:binary".strip(),
+                            "message": f"file '{cmd[0]}' exists at '{actual_bin}' but is not executable (missing +x permission)",
                         })
                 elif svc.type == "fd" and svc.python:
-                    py_str = str(render(svc.python, {"root": str(root), "cwd": str(cwd), "python": sys.executable}))
-                    py_path = Path(py_str)
-                    if not (shutil.which(py_str) or py_path.is_file() or (cwd / py_path).is_file() or (root / py_path).is_file()):
+                    py_str = str(render(svc.python, render_values))
+                    actual_py = _resolve_executable(py_str, cwd)
+                    if actual_py is None:
                         issues.append({
                             "level": "error",
                             "check": f"{mode_tag} service:{sname}:python".strip(),
-                            "message": f"python interpreter '{svc.python}' not found on PATH or at target path",
+                            "message": f"python interpreter '{svc.python}' not found on PATH or under '{svc.cwd}'",
+                        })
+                    elif not os.access(actual_py, os.X_OK):
+                        issues.append({
+                            "level": "error",
+                            "check": f"{mode_tag} service:{sname}:python".strip(),
+                            "message": f"python interpreter '{svc.python}' exists at '{actual_py}' but is not executable (missing +x permission)",
                         })
             elif svc.type == "compose":
                 if not shutil.which("docker"):
@@ -2478,6 +3513,74 @@ def cmd_check(
     return EXIT_USAGE if has_errors else EXIT_OK
 
 
+# Images and service names that identify a datastore. Anything else - including
+# an application whose environment merely mentions a database URL - is not one.
+POSTGRES_IMAGES = ("postgres", "postgresql", "postgis", "timescaledb")
+POSTGRES_NAMES = ("db", "database", "postgres", "postgresql")
+REDIS_IMAGES = ("redis", "valkey")
+REDIS_NAMES = ("redis", "valkey", "cache")
+
+
+def _extract_compose_services(content: str) -> dict[str, str]:
+    """Return each top-level Compose service name mapped to its own block."""
+    services: dict[str, list[str]] = {}
+    in_services = False
+    current_svc = None
+
+    for line in content.splitlines():
+        trimmed = line.strip()
+        if not trimmed or trimmed.startswith("#"):
+            continue
+        if re.match(r"^services\s*:\s*$", line):
+            in_services = True
+            current_svc = None
+            continue
+        elif in_services and re.match(r"^[a-zA-Z0-9_-]+\s*:\s*$", line) and not line.startswith(" "):
+            in_services = False
+            current_svc = None
+            continue
+
+        if in_services:
+            m = re.match(r"^ {2}([a-zA-Z0-9_-]+)\s*:\s*$", line)
+            if m:
+                current_svc = m.group(1)
+                services[current_svc] = []
+            elif current_svc and (line.startswith("   ") or line.startswith("\t")):
+                services[current_svc].append(line)
+
+    return {k: "\n".join(v).lower() for k, v in services.items()}
+
+
+def _compose_service_image(block: str) -> str | None:
+    """Return the image name declared in one Compose service block."""
+    match = re.search(r"^\s{2,}image\s*:\s*[\"']?([^\"'\s#]+)", block, re.MULTILINE)
+    if not match:
+        return None
+    reference = match.group(1)
+    return reference.rsplit("/", 1)[-1].split(":", 1)[0]
+
+
+def classify_compose_service(name: str, block: str) -> str | None:
+    """Return "postgres", "redis" or None for one Compose service.
+
+    The decision uses the declared image first and the service name only as a
+    fallback. An image that names a different engine is never overridden by a
+    suggestive service name, so a ``db`` service running MySQL stays unmatched.
+    """
+    image = _compose_service_image(block)
+    if image is not None:
+        if image in POSTGRES_IMAGES:
+            return "postgres"
+        if image in REDIS_IMAGES:
+            return "redis"
+        return None
+    if name.lower() in POSTGRES_NAMES:
+        return "postgres"
+    if name.lower() in REDIS_NAMES:
+        return "redis"
+    return None
+
+
 def cmd_init(
     root: Path,
     dry_run: bool = False,
@@ -2487,7 +3590,7 @@ def cmd_init(
 ) -> int:
     root = Path(root).resolve()
     target_manifest = root / "rig.json"
-    if target_manifest.exists() and not force and not dry_run:
+    if (target_manifest.is_symlink() or target_manifest.exists()) and not force and not dry_run:
         raise RigError(
             f"'{target_manifest}' already exists. Pass --force to overwrite.",
             code="E_USAGE",
@@ -2509,22 +3612,22 @@ def cmd_init(
     if detected_compose:
         try:
             content = (root / detected_compose).read_text()
-            if "postgres:" in content or "postgresql:" in content or "db:" in content:
-                db_svc = "postgres" if "postgres:" in content else "db"
-                base_services["postgres"] = {
+            compose_svcs = _extract_compose_services(content)
+            defaults = {
+                "postgres": (5432, "PostgreSQL database container"),
+                "redis": (6379, "Redis cache container"),
+            }
+            for svc_name, block in compose_svcs.items():
+                kind = classify_compose_service(svc_name, block)
+                if kind is None or kind in base_services:
+                    continue
+                port, description = defaults[kind]
+                base_services[kind] = {
                     "type": "compose",
                     "compose_file": detected_compose,
-                    "compose_service": db_svc,
-                    "compose_port": 5432,
-                    "description": "PostgreSQL database container",
-                }
-            if "redis:" in content:
-                base_services["redis"] = {
-                    "type": "compose",
-                    "compose_file": detected_compose,
-                    "compose_service": "redis",
-                    "compose_port": 6379,
-                    "description": "Redis cache container",
+                    "compose_service": svc_name,
+                    "compose_port": port,
+                    "description": description,
                 }
         except OSError:
             pass
@@ -2588,7 +3691,7 @@ def cmd_init(
         native_services["web"] = {
             "type": "port",
             "cwd": ".",
-            "command": ["python", "-m", "http.server", "{port}"],
+            "command": [sys.executable, "-m", "http.server", "--bind", "127.0.0.1", "{port}"],
             "healthcheck_path": "/",
             "description": "Local HTTP static file server",
         }
@@ -2619,16 +3722,49 @@ def cmd_init(
             print(formatted_json, end="")
         return EXIT_OK
 
-    target_manifest.write_text(formatted_json)
+    if not force:
+        try:
+            fd = os.open(
+                str(target_manifest),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o644,
+            )
+            with os.fdopen(fd, "w") as f:
+                f.write(formatted_json)
+        except FileExistsError:
+            raise RigError(
+                f"'{target_manifest}' already exists. Pass --force to overwrite.",
+                code="E_USAGE",
+                exit_code=EXIT_USAGE,
+            )
+    else:
+        tmp_manifest: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=root, delete=False, prefix=".rig.json.tmp."
+            ) as handle:
+                tmp_manifest = handle.name
+                handle.write(formatted_json)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_manifest, 0o644)
+            os.replace(tmp_manifest, target_manifest)
+        except BaseException:
+            if tmp_manifest is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_manifest)
+            raise
+
+    if up:
+        if not as_json:
+            print(f"Created {target_manifest}")
+            print(f"Starting stack for {project_name}...")
+        return cmd_up(root, target_manifest, as_json=as_json)
+
     if as_json:
         print_json_envelope("init", {"manifest": manifest_data, "path": str(target_manifest), "created": True})
     else:
         print(f"Created {target_manifest}")
-
-    if up:
-        if not as_json:
-            print(f"Starting stack for {project_name}...")
-        return cmd_up(root, target_manifest, as_json=as_json)
 
     return EXIT_OK
 
@@ -2713,10 +3849,15 @@ def cmd_schema(as_json: bool = False) -> int:
 
 
 
-def print_json_envelope(command: str, data: Any) -> None:
+def print_json_envelope(command: str, data: Any, ok: bool | None = None) -> None:
+    if ok is None:
+        if isinstance(data, dict) and "ok" in data:
+            ok = bool(data["ok"])
+        else:
+            ok = True
     envelope = {
         "schema": f"rig.{command}/1",
-        "ok": True,
+        "ok": ok,
         "data": data,
     }
     print(json.dumps(envelope, indent=2))
@@ -2742,15 +3883,33 @@ def print_json_error(exc: RigError, command: str = "error") -> None:
 # --------------------------------------------------------------------------------------
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+class RigArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, as_json: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.as_json = as_json
+
+    def error(self, message: str):
+        if self.as_json:
+            err = RigError(message, code="E_USAGE", exit_code=EXIT_USAGE)
+            print_json_error(err, command="cli")
+            sys.exit(EXIT_USAGE)
+        super().error(message)
+
+
+def build_parser(as_json: bool = False) -> argparse.ArgumentParser:
+    parser = RigArgumentParser(
         prog="rig",
         description="Machine-wide and local development environment supervisor.",
+        as_json=as_json,
     )
     parser.add_argument("--root", default=None, help="project root (default: auto-discovered)")
     parser.add_argument("--manifest", default=None, help="path to manifest (e.g. rig.json or stack.json)")
     parser.add_argument("--json", action="store_true", help="output structured JSON response envelope")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=lambda **kwargs: RigArgumentParser(as_json=as_json, **kwargs),
+    )
 
     # up
     p_up = sub.add_parser("up", help="start the selected services")
@@ -2833,7 +3992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if as_json:
         raw_argv = [a for a in raw_argv if a != "--json"]
 
-    parser = build_parser()
+    parser = build_parser(as_json=as_json)
     try:
         args = parser.parse_args(raw_argv)
     except SystemExit as exc:

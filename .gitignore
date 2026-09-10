@@ -1,0 +1,10 @@
+.local-run/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+*.egg-info/
+dist/
+build/
+.DS_Store

@@ -1,0 +1,26 @@
+{
+  "project": "deltalytic",
+  "services": {
+    "backend": {
+      "type": "fd",
+      "cwd": "platform",
+      "command": "{root}/platform/.venv/bin/python -m app.platform.server --fd {fd}",
+      "health": "/api/v1/health",
+      "env_files": [".env"],
+      "env": {
+        "DATABASE_URL": "sqlite:///{root}/data/deltalytic.db"
+      }
+    },
+    "frontend": {
+      "type": "port",
+      "cwd": "frontend",
+      "command": "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port {port} --strictPort",
+      "aliases": ["ui"],
+      "depends_on": ["backend"],
+      "health": "/",
+      "env": {
+        "BACKEND_PORT": "{backend_port}"
+      }
+    }
+  }
+}

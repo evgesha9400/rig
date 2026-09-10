@@ -112,6 +112,8 @@ deltalytic      68d374ab9c34  native     running   2/2     backend:54123, ui:541
 my-api          a1b2c3d4e5f6  container  running   1/1     db:5432                  /Users/alice/work/my-api
 ```
 
+`STATUS` reports the instance as a whole: `running` when every recorded service is up, `partial` when only some are, `stopped` when none are, and `orphaned` when the checkout directory no longer exists.
+
 Add `--health` to probe HTTP endpoints for live health checks:
 ```bash
 rig ps --health
@@ -143,6 +145,11 @@ rig prune
 # Force-kill any lingering processes in unmanaged instances and prune
 rig prune --force
 ```
+
+`prune` reclaims an instance's recorded state but keeps its `checkout.lock` file,
+so a concurrent `rig` command can never take a lock on a file nobody else can
+see. `prune --force` stops services dependents-first and exits `1` while
+preserving any dependency whose dependent refused to stop.
 
 ---
 
@@ -307,9 +314,49 @@ rig schema
 | `depends_on` | string[] | No | Services that must be healthy before this service starts. |
 | `aliases` | string[] | No | Alternative names for scope targeting (e.g. `["ui"]` for `frontend`). |
 | `env` | map | No | Environment variables. Supports `{<service>_port}` placeholders. |
+| `env_files` | string[] | No | Dotenv-style files, relative to the repository root, loaded before `env`. |
 | `inherit` | string[] | No | Ambient environment variables to pass through beyond the base safe allowlist. |
 | `compose_file` | string | For `compose` | Path to Docker Compose file. |
 | `compose_service`| string | For `compose` | Name of service inside Docker Compose file. |
+| `compose_port` | integer | No | Container port whose published host port is recorded as the service URL. |
+| `docker_context`| string | No | Docker context every command for this service is pinned to. |
+
+### Environment and Docker Endpoint for `compose` Services
+
+`env`, `env_files` and `inherit` apply to `compose` services as well as to `fd`
+and `port` services. The resulting environment is handed to `docker compose`
+itself, so it drives `${VAR}` interpolation inside the compose file and reaches
+the containers.
+
+That environment is an allowlist, so no ambient `DOCKER_*`, `COMPOSE_*` or
+application variable can leak in and point a service at another project's
+resources. The Docker client settings (`DOCKER_CONFIG`, `DOCKER_CERT_PATH`,
+`DOCKER_TLS_VERIFY`) are the exception: they are passed through so a TLS or
+rootless setup can still reach its own daemon.
+
+Those client settings are recorded with the service, and every later plain
+`docker` command — the label query, the inspection, `stop` and `rm` — is given
+the recorded ones instead of whatever the terminal holds. A service started
+against its own `DOCKER_CONFIG` therefore stays reachable for `rig status` and
+`rig down`, and a `DOCKER_CONFIG` exported afterwards cannot redirect them.
+
+The Docker endpoint in force at startup — `DOCKER_HOST` and the Docker context
+— is recorded with the service. Every later status query and teardown is pinned
+to that endpoint, so a `DOCKER_HOST` that changes between `rig up` and `rig
+down` can never send the query to a daemon that does not hold the container.
+
+The endpoint is chosen in Docker's own order of precedence:
+
+1. the `docker_context` the manifest declares;
+2. the ambient `DOCKER_CONTEXT`, which is read even though the service
+   environment is an allowlist, so `DOCKER_CONTEXT=colima rig up` is honoured;
+3. the ambient `DOCKER_HOST`, when neither of the above names a context;
+4. otherwise the active context, resolved with `docker context show`.
+
+Whenever a context decides, it is recorded alone and no host is recorded with
+it, because `--context` outranks `DOCKER_HOST`. A later `docker context use
+colima` therefore does not strand the container: `rig status`, `rig down` and
+`rig prune` still reach the context that holds it.
 
 ---
 

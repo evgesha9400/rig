@@ -38,3 +38,6 @@ max-module-lines = 150
 
 [tool.pylint.design]
 max-nested-blocks = 2
+
+[tool.pyrefly]
+search-path = [".", "src", "scripts"]

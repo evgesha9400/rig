@@ -1,0 +1,13 @@
+[importlinter]
+root_package = rig
+
+[importlinter:contract:1]
+name = Architectural Layers
+type = layers
+layers =
+    rig.commands
+    rig.manifest
+    rig.compose
+    rig.proc
+    rig.net
+    rig.core

@@ -1,0 +1,13 @@
+{
+  "threshold": 0,
+  "minLines": 5,
+  "minTokens": 40,
+  "reporters": ["console"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/.venv/**",
+    "**/.pytest_cache/**",
+    "**/.ruff_cache/**"
+  ],
+  "absolute": true
+}

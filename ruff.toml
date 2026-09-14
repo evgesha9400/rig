@@ -1,0 +1,49 @@
+# Hardened Ruff Configuration for Code Quality Gates
+# Invariants: Complexity <= 8, Arguments <= 3, Statements <= 15, Strict Error Handling
+
+target-version = "py310"
+line-length = 100
+
+[lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "C90",    # mccabe complexity
+    "B",      # flake8-bugbear
+    "BLE",    # flake8-blind-except (no bare except:)
+    "TRY",    # tryceratops (structured error handling)
+    "SIM",    # flake8-simplify
+    "UP",     # pyupgrade
+    "PLR",    # pylint refactor limits (complexity, statements, args)
+    "PIE",    # flake8-pie
+    "RUF",    # ruff-specific rules
+    "PT",     # flake8-pytest-style (lean tests)
+]
+
+ignore = [
+    "TRY003", # Avoid long exception messages in raise
+]
+
+[lint.mccabe]
+# Invariant 2: Cognitive Simplicity
+max-complexity = 8
+
+[lint.pylint]
+# Invariant 1: Atomicity (Uncle Bob function budget calibrated for Python)
+max-statements = 15
+max-args = 3
+max-positional-args = 3
+max-branches = 6
+max-returns = 4
+
+[lint.per-file-ignores]
+# Tests are permitted more flexible arguments and assertions
+"tests/**" = ["PLR0913", "PLR0915", "PLR0917", "PT009", "PT011", "PLR2004", "PT018", "PLR0911", "PLR0912", "E501", "SIM300"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

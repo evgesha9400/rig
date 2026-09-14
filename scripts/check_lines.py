@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Physical Line Budget Audit (Invariant 3: Modularity)
 
-Ceiling: Maximum 150 physical lines per file in src/.
-Fail-closed: Exits 1 if target directory does not exist or contains 0 Python files.
+Audits that no Python file exceeds the physical line ceiling.
 Counts literal newline bytes (b'\\n') to prevent Unicode separator distortions.
+Fail-closed: Exits 1 if target directory does not exist or contains 0 Python files.
 """
 
 from __future__ import annotations
@@ -11,8 +11,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-MAX_LINES_PER_FILE = 150
-SCAN_DIR = "src"
+DEFAULT_CEILING = 150
+DEFAULT_TARGET = "src"
+MIN_ARGS_FOR_TARGET = 2
+MIN_ARGS_FOR_CEILING = 3
 
 
 def _count_physical_lines(file_path: Path) -> int:
@@ -21,40 +23,56 @@ def _count_physical_lines(file_path: Path) -> int:
     return count + 1 if raw and not raw.endswith(b"\n") else count
 
 
-def _find_line_violations(py_files: list[Path], root_dir: Path) -> list[str]:
+def _relative_display(file_path: Path) -> str:
+    cwd = Path.cwd()
+    return str(file_path.relative_to(cwd)) if file_path.is_relative_to(cwd) else str(file_path)
+
+
+def _find_line_violations(py_files: list[Path], ceiling: int) -> list[str]:
     violations: list[str] = []
     for f in py_files:
         lines = _count_physical_lines(f)
-        if lines > MAX_LINES_PER_FILE:
-            rel = f.relative_to(root_dir)
-            violations.append(f"{rel} has {lines} lines (ceiling: {MAX_LINES_PER_FILE})")
+        if lines > ceiling:
+            disp = _relative_display(f)
+            violations.append(f"{disp} has {lines} lines (ceiling: {ceiling})")
     return violations
 
 
-def check_lines(root_dir: Path) -> int:
-    target = root_dir / SCAN_DIR
-    if not target.is_dir():
-        if not root_dir.is_dir():
-            print(f"❌ PHYSICAL LINE AUDIT FAILED: '{root_dir}' not found.")
-            return 1
-        target = root_dir
+def _resolve_target_dir(target_arg: str) -> Path | None:
+    path = Path(target_arg)
+    if path.is_dir():
+        return path
+    resolved = Path.cwd() / target_arg
+    return resolved if resolved.is_dir() else None
 
-    py_files = sorted(target.rglob("*.py"))
+
+def check_lines(target_path: Path, ceiling: int = DEFAULT_CEILING) -> int:
+    py_files = sorted(target_path.rglob("*.py"))
     if not py_files:
-        print(f"❌ PHYSICAL LINE AUDIT FAILED: 0 Python files in '{target}'.")
+        print(f"❌ PHYSICAL LINE AUDIT FAILED: 0 Python files in '{target_path}'.")
         return 1
 
-    violations = _find_line_violations(py_files, root_dir)
+    violations = _find_line_violations(py_files, ceiling)
     if violations:
-        print(f"❌ PHYSICAL LINE AUDIT FAILED (Ceiling: {MAX_LINES_PER_FILE} lines):")
+        print(f"❌ PHYSICAL LINE AUDIT FAILED (Ceiling: {ceiling} lines):")
         for v in violations:
             print(f"  • {v}")
         return 1
 
-    print(f"✅ Line audit passed ({len(py_files)} files, all ≤ {MAX_LINES_PER_FILE} lines).")
+    disp = _relative_display(target_path)
+    print(f"✅ Line audit passed for '{disp}' ({len(py_files)} files, all ≤ {ceiling} lines).")
     return 0
 
 
+def main() -> int:
+    target_str = sys.argv[1] if len(sys.argv) >= MIN_ARGS_FOR_TARGET else DEFAULT_TARGET
+    ceiling = int(sys.argv[2]) if len(sys.argv) >= MIN_ARGS_FOR_CEILING else DEFAULT_CEILING
+    target_dir = _resolve_target_dir(target_str)
+    if target_dir is None:
+        print(f"❌ PHYSICAL LINE AUDIT FAILED: Directory '{target_str}' not found.")
+        return 1
+    return check_lines(target_dir, ceiling)
+
+
 if __name__ == "__main__":
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
-    sys.exit(check_lines(target))
+    sys.exit(main())

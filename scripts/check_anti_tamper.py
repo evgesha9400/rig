@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Anti-Tamper Audit (Invariant Enforcement & Suppression Ban)
 
-Verifies 0 inline suppressions, strict ceilings, 0 runtime deps, and closed config schemas.
+Verifies 0 inline suppressions via tokenizer, strict ceilings, 0 runtime deps,
+and fully closed configuration schemas.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import io
 import json
 import os
 import re
 import sys
+import tokenize
 from pathlib import Path
 from typing import Any
 
@@ -18,27 +21,18 @@ import tomllib
 
 MAX_JSCPD_LINES = 5
 MAX_JSCPD_TOKENS = 40
-BANNED_PRAGMAS = (
-    r"#.*ruff:\s*noqa",
-    r"#.*(?<![a-zA-Z0-9_])noqa(?![a-zA-Z0-9_])",
-    r"#.*type:\s*ignore",
-    r"#.*pragma:\s*no cover",
-    r"#.*jscpd:\s*ignore",
-    r"#.*pylint:\s*disable",
+BANNED_PRAGMA_PATTERNS = (
+    r"ruff:\s*noqa",
+    r"(?<![a-zA-Z0-9_])noqa(?![a-zA-Z0-9_])",
+    r"type:\s*ignore",
+    r"pragma:\s*no cover",
+    r"jscpd:\s*ignore",
+    r"pylint:\s*(disable|skip-file)",
 )
-PROTECTED_RULES = (
-    "PLR0913",
-    "PLR0917",
-    "PLR0915",
-    "PLR0912",
-    "PLR0911",
-    "C901",
-    "C90",
-    "PLR",
-    "PL",
-    "C",
-    "ALL",
+REQUIRED_RULES = frozenset(
+    {"E", "F", "C90", "B", "BLE", "TRY", "SIM", "UP", "PLR", "PIE", "RUF", "PT"}
 )
+ALLOWED_IGNORES = frozenset({"TRY003"})
 ALLOWED_JSCPD_IGNORES = (
     "**/node_modules/**",
     "**/.venv/**",
@@ -47,19 +41,35 @@ ALLOWED_JSCPD_IGNORES = (
 )
 ALLOWED_RUFF_TOP_KEYS = frozenset({"target-version", "line-length", "lint", "format"})
 ALLOWED_RUFF_LINT_KEYS = frozenset({"select", "ignore", "mccabe", "pylint", "per-file-ignores"})
+ALLOWED_RUFF_PYLINT_KEYS = frozenset(
+    {"max-statements", "max-args", "max-positional-args", "max-branches", "max-returns"}
+)
+ALLOWED_RUFF_MCCABE_KEYS = frozenset({"max-complexity"})
+ALLOWED_RUFF_FORMAT_KEYS = frozenset(
+    {"quote-style", "indent-style", "skip-magic-trailing-comma", "line-ending"}
+)
 ALLOWED_JSCPD_KEYS = frozenset(
     {"threshold", "minLines", "minTokens", "reporters", "ignore", "absolute"}
 )
 ALLOWED_PER_FILE_PATTERNS = frozenset({"tests/**"})
 
 
-def _check_suppressions(src_dir: Path) -> list[str]:
-    violations, pattern = [], re.compile("|".join(BANNED_PRAGMAS), re.IGNORECASE)
-    for py_file in src_dir.rglob("*.py"):
-        for idx, line in enumerate(py_file.read_text(encoding="utf-8").splitlines(), start=1):
-            if pattern.search(line):
-                violations.append(f"{py_file.relative_to(src_dir.parent)}:{idx}: {line.strip()}")
-    return violations
+def _check_suppressions(src_dir: Path) -> tuple[int, list[str]]:
+    violations: list[str] = []
+    py_files = sorted(src_dir.rglob("*.py"))
+    pattern = re.compile("|".join(BANNED_PRAGMA_PATTERNS), re.IGNORECASE)
+
+    for py_file in py_files:
+        try:
+            tokens = tokenize.tokenize(io.BytesIO(py_file.read_bytes()).readline)
+            for tok in tokens:
+                if tok.type == tokenize.COMMENT and pattern.search(tok.string):
+                    rel = py_file.relative_to(src_dir.parent)
+                    violations.append(f"{rel}:{tok.start[0]}: {tok.string.strip()}")
+        except (tokenize.TokenError, IndentationError, SyntaxError) as err:
+            violations.append(f"{py_file.relative_to(src_dir.parent)}: Tokenizer failure: {err}")
+
+    return len(py_files), violations
 
 
 def _check_nested_configs(src: Path) -> list[str]:
@@ -96,14 +106,15 @@ def _check_ruff_ceilings(data: dict[str, Any]) -> list[str]:
 
 def _check_ignored_rules(lint: dict[str, Any]) -> list[str]:
     violations = []
+    selected = set(lint.get("select", [])) | set(lint.get("extend-select", []))
+    missing = REQUIRED_RULES - selected
+    if missing:
+        violations.append(f"ruff.toml missing required rule selection: {sorted(missing)}")
+
     all_ignored = list(lint.get("ignore", [])) + list(lint.get("extend-ignore", []))
     for rule in all_ignored:
-        if any(rule == b or b.startswith(rule) or rule.startswith(b) for b in PROTECTED_RULES):
+        if rule not in ALLOWED_IGNORES:
             violations.append(f"ruff.toml illegally ignores quality rule: {rule}")
-    selected = set(lint.get("select", [])) | set(lint.get("extend-select", []))
-    for req in ("E", "F", "C90", "PLR"):
-        if req not in selected:
-            violations.append(f"ruff.toml missing required rule selection: {req}")
     return violations
 
 
@@ -113,6 +124,16 @@ def _check_ruff_schema(data: dict[str, Any], lint: dict[str, Any]) -> list[str]:
         violations.append(f"ruff.toml defines unauthorized top-level keys: {sorted(bad_top)}")
     if bad_lint := set(lint.keys()) - ALLOWED_RUFF_LINT_KEYS:
         violations.append(f"ruff.toml [lint] defines unauthorized keys: {sorted(bad_lint)}")
+    if bad_pylint := set(lint.get("pylint", {}).keys()) - ALLOWED_RUFF_PYLINT_KEYS:
+        violations.append(
+            f"ruff.toml [lint.pylint] defines unauthorized keys: {sorted(bad_pylint)}"
+        )
+    if bad_mccabe := set(lint.get("mccabe", {}).keys()) - ALLOWED_RUFF_MCCABE_KEYS:
+        violations.append(
+            f"ruff.toml [lint.mccabe] defines unauthorized keys: {sorted(bad_mccabe)}"
+        )
+    if bad_format := set(data.get("format", {}).keys()) - ALLOWED_RUFF_FORMAT_KEYS:
+        violations.append(f"ruff.toml [format] defines unauthorized keys: {sorted(bad_format)}")
     return violations
 
 
@@ -158,10 +179,25 @@ def _check_jscpd_limits(data: dict[str, Any]) -> list[str]:
     violations = []
     if bad_keys := set(data.keys()) - ALLOWED_JSCPD_KEYS:
         violations.append(f".jscpd.json defines unauthorized keys: {sorted(bad_keys)}")
-    if data.get("threshold") != 0:
-        violations.append(f".jscpd.json threshold must be 0 (current: {data.get('threshold')})")
-    if data.get("minLines", 999) > MAX_JSCPD_LINES or data.get("minTokens", 999) > MAX_JSCPD_TOKENS:
-        violations.append(".jscpd.json limits weakened: requires minLines<=5, minTokens<=40")
+    threshold = data.get("threshold")
+    if threshold != 0 or isinstance(threshold, bool):
+        violations.append(f".jscpd.json threshold must be 0 (current: {threshold})")
+    min_lines = data.get("minLines")
+    if (
+        not isinstance(min_lines, int)
+        or isinstance(min_lines, bool)
+        or min_lines < 1
+        or min_lines > MAX_JSCPD_LINES
+    ):
+        violations.append(f".jscpd.json minLines invalid: requires integer <= {MAX_JSCPD_LINES}")
+    min_tokens = data.get("minTokens")
+    if (
+        not isinstance(min_tokens, int)
+        or isinstance(min_tokens, bool)
+        or min_tokens < 1
+        or min_tokens > MAX_JSCPD_TOKENS
+    ):
+        violations.append(f".jscpd.json minTokens invalid: requires integer <= {MAX_JSCPD_TOKENS}")
     return violations
 
 
@@ -217,8 +253,13 @@ def run_audit(root: Path) -> int:
         print("❌ ANTI-TAMPER AUDIT FAILED: src/ directory not found.")
         return 1
 
+    file_count, suppression_issues = _check_suppressions(src)
+    if file_count == 0:
+        print("❌ ANTI-TAMPER AUDIT FAILED: Scanned 0 Python files in src/.")
+        return 1
+
     issues = (
-        _check_suppressions(src)
+        suppression_issues
         + _check_nested_configs(src)
         + _check_competing_configs(root)
         + _check_ruff_config(root, src)
@@ -230,8 +271,11 @@ def run_audit(root: Path) -> int:
         for issue in issues:
             print(f"  • {issue}")
         return 1
-
-    print("✅ Anti-tamper audit passed (0 suppressions, strict ceilings, 0 runtime deps).")
+    msg = (
+        f"✅ Anti-tamper audit passed ({file_count} files scanned, "
+        f"0 suppressions, strict ceilings, 0 runtime deps)."
+    )
+    print(msg)
     return 0
 
 

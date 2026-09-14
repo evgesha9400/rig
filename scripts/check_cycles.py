@@ -1,99 +1,68 @@
 #!/usr/bin/env python3
-"""Zero-Cycle Dependency Audit (Invariant 5: Layer Hierarchy & Cycle Bans)
+"""Zero-Cycle Dependency Audit (Invariant 5: Structural Integrity & Cycle Bans)
 
-Builds the complete import graph across src/ and asserts that
-no circular dependencies exist anywhere in the codebase.
+Builds the complete import graph using Grimp and asserts zero circular dependencies
+via standard-library graphlib.TopologicalSorter.
 """
 
 from __future__ import annotations
 
-import ast
+import graphlib
 import sys
 from pathlib import Path
 
+import grimp
 
-class _CycleFinder:
-    def __init__(self, graph: dict[str, set[str]]) -> None:
-        self.graph = graph
-        self.visited: set[str] = set()
-        self.stack: list[str] = []
-        self.on_stack: set[str] = set()
-        self.cycles: list[list[str]] = []
-
-    def dfs(self, node: str) -> None:
-        self.visited.add(node)
-        self.stack.append(node)
-        self.on_stack.add(node)
-        for neighbor in self.graph.get(node, ()):
-            if neighbor not in self.visited:
-                self.dfs(neighbor)
-            elif neighbor in self.on_stack:
-                idx = self.stack.index(neighbor)
-                self.cycles.append([*self.stack[idx:], neighbor])
-        self.stack.pop()
-        self.on_stack.remove(node)
-
-    def find(self) -> list[list[str]]:
-        for node in sorted(self.graph):
-            if node not in self.visited:
-                self.dfs(node)
-        return self.cycles
+SCAN_DIR = "src"
 
 
-def _file_to_mod(f: Path, src_dir: Path) -> str:
-    rel = f.relative_to(src_dir)
-    if f.stem == "__init__":
-        return ".".join(rel.parent.parts)
-    return ".".join(rel.with_suffix("").parts)
+def _discover_top_packages(src_dir: Path) -> list[str]:
+    packages: list[str] = []
+    for item in sorted(src_dir.iterdir()):
+        if item.name.startswith((".", "_")):
+            continue
+        if item.is_dir() and (item / "__init__.py").exists():
+            packages.append(item.name)
+        elif item.is_file() and item.suffix == ".py":
+            packages.append(item.stem)
+    return packages
 
 
-def _resolve_relative_mod(node: ast.ImportFrom, parts: list[str], is_pkg: bool) -> str:
-    if node.level <= 0:
-        return node.module or ""
-    up = (node.level - 1) if is_pkg else node.level
-    base = [] if up >= len(parts) else (parts[:-up] if up > 0 else parts)
-    prefix = ".".join(base)
-    return f"{prefix}.{node.module}" if node.module and prefix else (node.module or prefix)
-
-
-def _extract_imports(f: Path, src_dir: Path, all_mods: set[str]) -> set[str]:
-    cur_mod = _file_to_mod(f, src_dir)
-    is_pkg = f.stem == "__init__"
-    parts = cur_mod.split(".")
-    tree = ast.parse(f.read_text(encoding="utf-8"))
-    results = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            results.update(a.name for a in node.names if a.name in all_mods and a.name != cur_mod)
-        elif isinstance(node, ast.ImportFrom):
-            mod = _resolve_relative_mod(node, parts, is_pkg)
-            if mod in all_mods and mod != cur_mod:
-                results.add(mod)
-            for a in node.names:
-                cand = f"{mod}.{a.name}" if mod else a.name
-                if cand in all_mods and cand != cur_mod:
-                    results.add(cand)
-    return results
+def _run_grimp_check(top_packages: list[str]) -> tuple[int, str | None]:
+    try:
+        graph = grimp.build_graph(
+            *top_packages,
+            cache_dir=None,
+            exclude_type_checking_imports=False,
+        )
+        dependencies = {m: graph.find_modules_directly_imported_by(m) for m in graph.modules}
+        graphlib.TopologicalSorter(dependencies).prepare()
+        return len(graph.modules), None
+    except graphlib.CycleError as err:
+        path = " -> ".join(err.args[1]) if len(err.args) > 1 else str(err)
+        return 0, f"CIRCULAR DEPENDENCY DETECTED:\n  • {path}"
+    except (grimp.exceptions.GrimpException, ValueError) as err:
+        return 0, f"CYCLE AUDIT FAILED: {err}"
 
 
 def check_cycles(root_dir: Path) -> int:
-    src_dir = root_dir / "src"
+    src_dir = (root_dir / SCAN_DIR).resolve()
     if not src_dir.is_dir():
-        print("❌ CYCLE AUDIT FAILED: src/ directory not found.")
+        print(f"❌ CYCLE AUDIT FAILED: '{src_dir}' directory not found.")
         return 1
 
-    py_files = [f for f in src_dir.rglob("*.py")]
-    all_mods = {_file_to_mod(f, src_dir) for f in py_files}
-    graph = {_file_to_mod(f, src_dir): _extract_imports(f, src_dir, all_mods) for f in py_files}
-
-    cycles = _CycleFinder(graph).find()
-    if cycles:
-        print(f"❌ CIRCULAR DEPENDENCY DETECTED ({len(cycles)} cycles):")
-        for cycle in cycles:
-            print("  • " + " -> ".join(cycle))
+    sys.path.insert(0, str(src_dir))
+    top_packages = _discover_top_packages(src_dir)
+    if not top_packages:
+        print(f"❌ CYCLE AUDIT FAILED: No packages found in '{src_dir}'.")
         return 1
 
-    print(f"✅ Zero circular imports detected ({len(graph)} modules analyzed).")
+    mod_count, error = _run_grimp_check(top_packages)
+    if error:
+        print(f"❌ {error}")
+        return 1
+
+    print(f"✅ Zero circular imports detected ({mod_count} modules analyzed via Grimp).")
     return 0
 
 

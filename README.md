@@ -19,7 +19,7 @@ Modern multi-service local development often suffers from:
 3. **Machine-Wide Supervision**: Inspect all active projects across your machine (`rig ps`), stop any named project (`rig down <project>`), or tear down all active instances at once (`rig down --all`).
 4. **Multi-Stack Modes (`native` vs `container`)**: Define base services and mode overlays in a single `rig.json`. Switch modes cleanly with mutex collision protection (`rig up --mode container --switch`).
 5. **Zero-Race Socket Inheritance (`type: "fd"`)**: Binds listening sockets on kernel port `0`, holds them open, and passes the descriptors directly into child processes (`--fd {fd}`). The port is never released between allocation and service start.
-6. **Strict Ephemeral Ports (`type: "port"`)**: Passes dynamically allocated free ports (`--port {port}`) and verifies listener identity via positive matching on the recorded PID/PGID.
+6. **Human-Friendly & Sticky Ports**: Allocates clean, typing-friendly ports (`3000` for frontend, `8000` for backend) by default, supports explicit `preferred_port` in `rig.json`, and maintains sticky port leases in instance state across restarts.
 7. **One-Command Setup**: `rig init [--up]` automatically scans your repository for Docker Compose, FastAPI, Flask, Django, Vite, or Next.js and generates a validated `rig.json`.
 8. **AI-Friendly Protocol**: Universal `--json` output envelope (`ok`, `schema`, `data`/`error`) and deterministic exit codes (`0` to `6`, `130`) designed for autonomous agents and CLI automation.
 
@@ -357,6 +357,42 @@ Whenever a context decides, it is recorded alone and no host is recorded with
 it, because `--context` outranks `DOCKER_HOST`. A later `docker context use
 colima` therefore does not strand the container: `rig status`, `rig down` and
 `rig prune` still reach the context that holds it.
+
+---
+
+## Stable & Human-Friendly Port Allocation
+
+`rig` eliminates random ephemeral ports (e.g. `58472`) and maintains stable, human-friendly ports across restarts:
+
+### 1. Precedence Hierarchy
+1. **Explicit `preferred_port` (or `port`)**: Defined per service in `rig.json` (e.g. `"preferred_port": 3000`).
+2. **Sticky Leased Port**: Rig persists assigned ports in instance state (`~/.local/state/rig/instances/<instance>/state.json`), reusing the same port across `rig down` and `rig up`.
+3. **Role-Based Friendly Defaults**:
+   - `frontend` / `web` / `ui` / `client` / `vite` / `next`: starts at `3000`
+   - `backend` / `api` / `server` / `app` / `worker`: starts at `8000`
+   - `docs` / `storybook` / `admin`: starts at `4000`
+   - other / unmatched: starts at `5000`
+4. **Collision-Safe Probing**: If the target port is occupied (e.g. by another checkout running simultaneously), `rig` probes `port + 1`, `port + 2`, etc., avoiding collisions automatically without jumping to high ephemeral numbers.
+
+### 2. Configuration Example
+
+```json
+{
+  "project": "my-app",
+  "services": {
+    "frontend": {
+      "type": "port",
+      "preferred_port": 3000,
+      "command": ["npm", "run", "dev", "--", "--port", "{port}"]
+    },
+    "backend": {
+      "type": "fd",
+      "preferred_port": 8000,
+      "app": "main:app"
+    }
+  }
+}
+```
 
 ---
 

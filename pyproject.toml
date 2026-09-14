@@ -26,7 +26,7 @@ rig = "rig.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 
 [tool.deptry]
 known_first_party = ["rig"]

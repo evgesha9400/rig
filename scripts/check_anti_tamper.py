@@ -234,6 +234,40 @@ def _check_jscpd_config(root: Path, src: Path) -> list[str]:
     return _check_jscpd_limits(data) + _check_jscpd_ignores(data.get("ignore", []), (root, src))
 
 
+DEV_TOOLS_IN_RUNTIME = frozenset(
+    {
+        "pytest",
+        "pytest-cov",
+        "ruff",
+        "pylint",
+        "mypy",
+        "black",
+        "flake8",
+        "isort",
+        "deptry",
+        "import-linter",
+        "tox",
+        "nox",
+        "pre-commit",
+        "grimp",
+    }
+)
+
+
+def _check_dep_entry(dep: Any) -> list[str]:
+    if not isinstance(dep, str):
+        return [f"pyproject.toml invalid dependency specification: {dep}"]
+    pkg_name = re.split(r"[^a-zA-Z0-9_\-]", dep)[0].lower()
+    violations = []
+    if pkg_name in DEV_TOOLS_IN_RUNTIME:
+        violations.append(
+            f"Development tool '{dep}' forbidden in runtime dependencies (move to dev dependencies)"
+        )
+    if "*" in dep:
+        violations.append(f"Wildcard version forbidden in runtime dependency: '{dep}'")
+    return violations
+
+
 def _check_dependencies(root: Path) -> list[str]:
     f = root / "pyproject.toml"
     if not f.is_file():
@@ -242,9 +276,38 @@ def _check_dependencies(root: Path) -> list[str]:
         data = tomllib.loads(f.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError) as exc:
         return [f"pyproject.toml is not valid TOML: {exc}"]
+
+    deps = data.get("project", {}).get("dependencies")
+    if deps is None or not isinstance(deps, list):
+        return ["pyproject.toml missing required 'project.dependencies' list"]
+
+    violations = []
+    cqg_cfg = data.get("tool", {}).get("code-quality-gates", {})
+    if cqg_cfg.get("zero-runtime-dependencies", False) and deps != []:
+        violations.append(
+            f"pyproject.toml zero-runtime policy violated: dependencies must be [] (found: {deps})"
+        )
+
+    for dep in deps:
+        violations.extend(_check_dep_entry(dep))
+    return violations
+
+
+def _get_runtime_status(root: Path) -> str:
+    f = root / "pyproject.toml"
+    if not f.is_file():
+        return "verified runtime deps"
+    try:
+        data = tomllib.loads(f.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return "verified runtime deps"
     else:
-        deps = data.get("project", {}).get("dependencies")
-        return [] if deps == [] else [f"pyproject.toml dependencies must be [] (found: {deps})"]
+        cqg = data.get("tool", {}).get("code-quality-gates", {})
+        is_zero = (
+            cqg.get("zero-runtime-dependencies", False)
+            or data.get("project", {}).get("dependencies") == []
+        )
+        return "0 runtime deps" if is_zero else "verified runtime deps"
 
 
 def run_audit(root: Path) -> int:
@@ -271,9 +334,11 @@ def run_audit(root: Path) -> int:
         for issue in issues:
             print(f"  • {issue}")
         return 1
+
+    dep_status = _get_runtime_status(root)
     msg = (
         f"✅ Anti-tamper audit passed ({file_count} files scanned, "
-        f"0 suppressions, strict ceilings, 0 runtime deps)."
+        f"0 suppressions, strict ceilings, {dep_status})."
     )
     print(msg)
     return 0

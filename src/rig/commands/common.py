@@ -19,6 +19,8 @@ from rig.net.ports import port_is_free
 from rig.proc.process import identity_matches, pid_alive
 from rig.proc.teardown import pgid_alive, terminate_record
 
+_COMPOSE_STATUS_LABELS: dict[str, str] = {"alive": "running", "error": "error"}
+
 
 def record_alive(record: Mapping[str, Any], root: Path) -> bool:
     if record.get("type") == "compose":
@@ -30,8 +32,7 @@ def record_status(record: Mapping[str, Any], root: Path) -> str:
     """Return 'running', 'stopped' or 'error' for one recorded service."""
     if record.get("type") != "compose":
         return "running" if identity_matches(record) else "stopped"
-    st = compose_record_status(record, root)
-    return "running" if st == "alive" else ("error" if st == "error" else "stopped")
+    return _COMPOSE_STATUS_LABELS.get(compose_record_status(record, root), "stopped")
 
 
 def is_service_verifiable_alive(record: Mapping[str, Any], root: Path) -> bool:

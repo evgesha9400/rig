@@ -12,6 +12,20 @@ POSTGRES_NAMES = ("db", "database", "postgres", "postgresql")
 REDIS_IMAGES = ("redis", "valkey")
 REDIS_NAMES = ("redis", "valkey", "cache")
 
+_IMAGE_KINDS = {
+    **dict.fromkeys(POSTGRES_IMAGES, "postgres"),
+    **dict.fromkeys(REDIS_IMAGES, "redis"),
+}
+_NAME_KINDS = {
+    **dict.fromkeys(POSTGRES_NAMES, "postgres"),
+    **dict.fromkeys(REDIS_NAMES, "redis"),
+}
+_PACKAGE_MANAGERS = (
+    ("pnpm-lock.yaml", "pnpm"),
+    ("yarn.lock", "yarn"),
+    ("bun.lockb", "bun"),
+)
+
 
 def _is_top_level_section(line: str) -> bool:
     return bool(re.match(r"^[a-zA-Z0-9_-]+\s*:\s*$", line) and not line.startswith(" "))
@@ -68,15 +82,7 @@ def _compose_service_image(block: str) -> str | None:
 def classify_compose_service(name: str, block: str) -> str | None:
     """Return 'postgres', 'redis' or None for one Compose service."""
     image = _compose_service_image(block)
-    if image is not None:
-        return (
-            "postgres" if image in POSTGRES_IMAGES else ("redis" if image in REDIS_IMAGES else None)
-        )
-    if name.lower() in POSTGRES_NAMES:
-        return "postgres"
-    if name.lower() in REDIS_NAMES:
-        return "redis"
-    return None
+    return _IMAGE_KINDS.get(image) if image is not None else _NAME_KINDS.get(name.lower())
 
 
 def _find_fastapi_app(root: Path) -> str:
@@ -116,13 +122,10 @@ def detect_backend(
 def detect_frontend(root: Path, native_services: dict[str, Any], has_backend: bool) -> None:
     if not (root / "package.json").is_file():
         return
-    pm = "npm"
-    if (root / "pnpm-lock.yaml").is_file():
-        pm = "pnpm"
-    elif (root / "yarn.lock").is_file():
-        pm = "yarn"
-    elif (root / "bun.lockb").is_file():
-        pm = "bun"
+    pm = next(
+        (manager for lock, manager in _PACKAGE_MANAGERS if (root / lock).is_file()),
+        "npm",
+    )
     spec: dict[str, Any] = {
         "type": "port",
         "cwd": ".",

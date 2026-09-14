@@ -38,9 +38,7 @@ def init_compose_record(
         "health": service.healthcheck_path,
         "healthcheck_path": service.healthcheck_path,
     }
-    if env is not None:
-        rec["compose_env"] = redact(env)
-    return rec
+    return {**rec, **({"compose_env": redact(env)} if env is not None else {})}
 
 
 INTERRUPTION_EXCEPTIONS = (

@@ -113,19 +113,14 @@ def _has_root_marker(directory: Path) -> bool:
 def find_project_root(start: Path | None = None) -> Path:
     """Find project root by walking upward from current working directory."""
     current = (start or Path.cwd()).resolve()
-    for parent in [current, *current.parents]:
-        if _has_root_marker(parent):
-            return parent
-    return current
+    search_path = [current, *current.parents]
+    return next((p for p in search_path if _has_root_marker(p)), current)
 
 
 def find_default_manifest(root: Path) -> Path:
     """Resolve default manifest path, checking rig.json then stack.json candidates."""
-    for rel in _PROJECT_CANDIDATES:
-        c = root / rel
-        if c.is_file():
-            return c
-    return root / _PROJECT_CANDIDATES[0]
+    candidates = (root / rel for rel in _PROJECT_CANDIDATES)
+    return next((c for c in candidates if c.is_file()), root / _PROJECT_CANDIDATES[0])
 
 
 def _read_project_from_manifest(manifest_path: Path) -> str | None:
@@ -142,8 +137,5 @@ def _read_project_from_manifest(manifest_path: Path) -> str | None:
 
 def _get_project_name(root: Path) -> str:
     root = Path(root).resolve()
-    for rel in _PROJECT_CANDIDATES:
-        name = _read_project_from_manifest(root / rel)
-        if name:
-            return name
-    return root.name
+    names = (_read_project_from_manifest(root / rel) for rel in _PROJECT_CANDIDATES)
+    return next((name for name in names if name), root.name)

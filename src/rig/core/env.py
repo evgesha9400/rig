@@ -75,13 +75,9 @@ def build_service_env(
     values: Mapping[str, Any] = params.pop(0) if params else kwargs.get("values", {})
     env_files: Sequence[str] = params.pop(0) if params else kwargs.get("env_files", ())
 
-    env: dict[str, str] = {}
-    for name in (*BASE_ENV_ALLOWLIST, *inherit):
-        if name in os.environ:
-            env[name] = os.environ[name]
+    env = {name: os.environ[name] for name in (*BASE_ENV_ALLOWLIST, *inherit) if name in os.environ}
     for relative in env_files:
         env.update(parse_env_file(Path(root) / relative))
     merged = {**values, "root": str(root)}
-    for key, raw in declared.items():
-        env[str(key)] = str(render(raw, merged))
+    env.update((str(key), str(render(raw, merged))) for key, raw in declared.items())
     return env

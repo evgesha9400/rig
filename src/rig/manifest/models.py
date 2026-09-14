@@ -87,14 +87,20 @@ class Manifest:
             "full": list(mode_services.keys()),
             "local": list(mode_services.keys()),
         }
-        for sname, s in mode_services.items():
-            derived[sname] = [sname]
-            for alias in s.aliases:
-                derived[alias] = [sname]
-        for sc_name, members in self.explicit_scopes.items():
-            valid_members = [m for m in members if m in mode_services]
-            if valid_members:
-                derived[sc_name] = valid_members
+        derived.update(
+            {
+                alias: [name]
+                for name, service in mode_services.items()
+                for alias in (name, *service.aliases)
+            }
+        )
+        derived.update(
+            {
+                scope: selected
+                for scope, members in self.explicit_scopes.items()
+                if (selected := [member for member in members if member in mode_services])
+            }
+        )
         return derived
 
     def for_mode(self, mode_name: str | None = None) -> Manifest:
@@ -104,8 +110,7 @@ class Manifest:
         if target_mode not in self.modes:
             known = ", ".join(sorted(self.modes.keys()))
             raise manifest_error(f"unknown mode {target_mode!r}; manifest declares modes: {known}")
-        mode_services = dict(self.base_services)
-        mode_services.update(self.modes[target_mode])
+        mode_services = {**self.base_services, **self.modes[target_mode]}
         derived_scopes = self._build_derived_scopes(mode_services)
 
         m = Manifest(

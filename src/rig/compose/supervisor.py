@@ -49,10 +49,7 @@ def _evaluate_container_states(
     states = [docker_container_status(found, ctx, host, cenv) for found in ids]
     if recorded and not any(recorded.startswith(f) or f.startswith(recorded) for f in ids):
         states.append(docker_container_status(recorded, ctx, host, cenv))
-    for state in ("alive", "stopped"):
-        if state in states:
-            return state
-    return "error"
+    return next((state for state in ("alive", "stopped") if state in states), "error")
 
 
 def compose_record_status(record: Mapping[str, Any], root: Path) -> str:

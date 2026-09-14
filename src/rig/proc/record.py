@@ -37,9 +37,7 @@ def build_record(
         "url": f"http://127.0.0.1:{port}" if port else None,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
-    if extra:
-        rec.update(extra)
-    return rec
+    return {**rec, **(extra or {})}
 
 
 def _record(

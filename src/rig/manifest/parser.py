@@ -40,12 +40,13 @@ def _validate_spec_health(name: str, spec: dict[str, Any]) -> None:
                 f"service {name!r} defines conflicting 'health' and 'healthcheck_path'"
             )
         spec["healthcheck_path"] = spec.pop("health")
-    if "healthcheck_timeout" in spec:
-        t = spec["healthcheck_timeout"]
-        if isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t <= 0:
-            raise manifest_error(
-                f"service {name!r} 'healthcheck_timeout' must be a positive finite number"
-            )
+    t = spec.get("healthcheck_timeout")
+    if "healthcheck_timeout" in spec and (
+        isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t <= 0
+    ):
+        raise manifest_error(
+            f"service {name!r} 'healthcheck_timeout' must be a positive finite number"
+        )
     if "healthcheck_path" in spec and spec["healthcheck_path"] is not None:
         hp = spec["healthcheck_path"]
         if not isinstance(hp, str) or not hp or not hp.startswith("/"):

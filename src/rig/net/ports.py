@@ -12,6 +12,12 @@ from rig.core.constants import PORT_MAX, PORT_MIN, PORT_RELEASE_TIMEOUT_SECS
 
 DEFAULT_PORT_WINDOW = 50
 
+_BASE_PORT_RULES = (
+    (("front", "web", "ui", "client", "next", "vite"), 3000),
+    (("back", "api", "server", "app", "worker"), 8000),
+    (("doc", "storybook", "admin"), 4000),
+)
+
 
 def _bind_candidate_port(port: int) -> tuple[socket.socket, int] | None:
     if port < PORT_MIN or port > PORT_MAX:
@@ -30,11 +36,10 @@ def _bind_candidate_port(port: int) -> tuple[socket.socket, int] | None:
 def _find_candidate_listener(
     candidate_ports: Sequence[int],
 ) -> tuple[socket.socket, int] | None:
-    for port in candidate_ports:
-        res = _bind_candidate_port(port)
-        if res is not None:
-            return res
-    return None
+    return next(
+        (res for port in candidate_ports if (res := _bind_candidate_port(port)) is not None),
+        None,
+    )
 
 
 def allocate_listener(candidate_ports: Sequence[int] | None = None) -> tuple[socket.socket, int]:
@@ -108,13 +113,7 @@ def wait_for_port_release(port: int, timeout: float = PORT_RELEASE_TIMEOUT_SECS)
 def default_base_port_for_service(name: str) -> int:
     """Return a human-friendly default base port based on service name conventions."""
     slug = name.lower()
-    if any(k in slug for k in ("front", "web", "ui", "client", "next", "vite")):
-        return 3000
-    if any(k in slug for k in ("back", "api", "server", "app", "worker")):
-        return 8000
-    if any(k in slug for k in ("doc", "storybook", "admin")):
-        return 4000
-    return 5000
+    return next((port for keys, port in _BASE_PORT_RULES if any(k in slug for k in keys)), 5000)
 
 
 def _collect_excluded_ports(state: Mapping[str, Any], avoid: set[int] | None) -> set[int]:

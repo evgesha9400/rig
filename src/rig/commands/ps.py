@@ -64,12 +64,12 @@ def _summarize_instance(inst_dir: Path, health: bool) -> dict[str, Any] | None:
     root_path = Path(root_str).resolve() if root_str else None
     root_exists = root_path.is_dir() if root_path else False
 
-    services_info, running_count = {}, 0
-    for sname, srec in state.get("services", {}).items():
-        info, alive = _inspect_instance_service(srec, root_path, health)
-        services_info[sname] = info
-        if alive:
-            running_count += 1
+    inspected = {
+        name: _inspect_instance_service(record, root_path, health)
+        for name, record in state.get("services", {}).items()
+    }
+    services_info = {name: info for name, (info, _) in inspected.items()}
+    running_count = sum(bool(alive) for _, alive in inspected.values())
 
     total = len(state.get("services", {}))
     status = _compute_instance_status(root_exists, running_count, total)
@@ -106,11 +106,11 @@ def _print_table(instances: list[dict[str, Any]]) -> None:
 def _collect_instances(instances_dir: Path, health: bool) -> list[dict[str, Any]]:
     if not instances_dir.is_dir():
         return []
-    instances_data = []
-    for d in sorted(instances_dir.iterdir()):
-        if d.is_dir() and (info := _summarize_instance(d, health)):
-            instances_data.append(info)
-    return instances_data
+    return [
+        info
+        for directory in sorted(instances_dir.iterdir())
+        if directory.is_dir() and (info := _summarize_instance(directory, health))
+    ]
 
 
 def cmd_ps(health: bool = False, as_json: bool = False) -> int:

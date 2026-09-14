@@ -21,11 +21,7 @@ from rig.proc.record import _record
 
 def uvicorn_argv(python: str, app: str, factory: bool = False) -> list[str]:
     """Return an argv that runs uvicorn on an inherited socket descriptor."""
-    argv = [python, "-m", "uvicorn", app]
-    if factory:
-        argv.append("--factory")
-    argv += ["--fd", "{fd}"]
-    return argv
+    return [python, "-m", "uvicorn", app, *(["--factory"] if factory else []), "--fd", "{fd}"]
 
 
 def _open_log(log_path: Path):

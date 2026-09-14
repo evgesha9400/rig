@@ -21,9 +21,11 @@ from rig.core.errors import RigError
 
 
 def _inherit_docker_client_env(cmd_env: dict[str, str]) -> None:
-    for name in DOCKER_CLIENT_ENV_PASSTHROUGH:
-        if name not in cmd_env and name in os.environ:
-            cmd_env[name] = os.environ[name]
+    cmd_env.update(
+        (name, os.environ[name])
+        for name in DOCKER_CLIENT_ENV_PASSTHROUGH
+        if name not in cmd_env and name in os.environ
+    )
 
 
 def _resolve_compose_endpoints(

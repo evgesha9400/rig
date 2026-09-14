@@ -76,10 +76,10 @@ def docker_record_status(record: Mapping[str, Any]) -> str:
     ctx, host = record_docker_endpoint(record)
     cenv = record_compose_env(record)
     states = [docker_container_status(t, ctx, host, cenv) for t in targets]
-    for s in ("alive", "stopped", "error"):
-        if s in states:
-            return s
-    return "absent" if answered else "error"
+    return next(
+        (s for s in ("alive", "stopped", "error") if s in states),
+        "absent" if answered else "error",
+    )
 
 
 def _stop_target(

@@ -127,15 +127,9 @@ def _prune_instance(inst_dir: Path, force: bool) -> tuple[str | None, dict[str, 
 def _collect_prune_results(
     instances_dir: Path, force: bool
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    pruned, failed = [], []
-    dirs = [d for d in sorted(instances_dir.iterdir()) if d.is_dir()]
-    for inst_dir in dirs:
-        p, f = _prune_instance(inst_dir, force)
-        if p:
-            pruned.append(p)
-        if f:
-            failed.append(f)
-    return pruned, failed
+    dirs = [directory for directory in sorted(instances_dir.iterdir()) if directory.is_dir()]
+    results = [_prune_instance(directory, force) for directory in dirs]
+    return [pruned for pruned, _ in results if pruned], [failed for _, failed in results if failed]
 
 
 def cmd_prune(force: bool = False, as_json: bool = False) -> int:

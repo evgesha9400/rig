@@ -108,7 +108,7 @@ def _resolve_initial_mode(
     if default_mode and default_mode not in modes:
         known = list(modes.keys())
         raise manifest_error(f"default_mode {default_mode!r} not declared in modes: {known}")
-    init_mode = default_mode or (next(iter(modes.keys())) if modes else None)
+    init_mode = default_mode or next(iter(modes), None)
     return default_mode, init_mode
 
 

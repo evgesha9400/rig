@@ -33,10 +33,9 @@ def compose_argv(
     args = p.pop(0) if p else kwargs.get("args", ())
     context = p.pop(0) if p else kwargs.get("context")
 
-    argv = ["docker"]
-    if context:
-        argv += ["--context", str(context)]
-    argv += [
+    return [
+        "docker",
+        *(["--context", str(context)] if context else []),
         "compose",
         "--project-directory",
         str(root),
@@ -44,8 +43,8 @@ def compose_argv(
         instance,
         "-f",
         str(compose_file),
+        *args,
     ]
-    return argv + list(args)
 
 
 def parse_compose_port(output: str) -> int:

@@ -15,7 +15,7 @@ from rig.commands.up.context import RollbackContext
 from rig.commands.up.rollback import rollback_started
 from rig.commands.up.runner import _start_with_retry
 from rig.core.constants import EXIT_MUTEX_CONFLICT, EXIT_OP_FAILED, EXIT_REFUSED
-from rig.core.errors import RigError, StackError
+from rig.core.errors import RigError
 from rig.core.state import write_state
 from rig.manifest.models import Manifest
 
@@ -23,7 +23,6 @@ _ABORT_EXCEPTIONS = (
     KeyboardInterrupt,
     SystemExit,
     RigError,
-    StackError,
     OSError,
     RuntimeError,
     ValueError,
@@ -96,7 +95,7 @@ def _start_step(
         return None, err
     try:
         rec = _start_with_retry(service, root, runtime, instance, state, state_path)
-    except (StackError, RigError) as exc:
+    except RigError as exc:
         return None, exc
     except _ABORT_EXCEPTIONS:
         write_state(state_path, state)

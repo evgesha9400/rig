@@ -13,7 +13,7 @@ from typing import Any
 
 from rig.core.constants import DIR_MODE_PRIVATE
 from rig.core.env import render
-from rig.core.errors import StackError
+from rig.core.errors import RigError
 from rig.net.ports import _safe_allocate_listener
 from rig.proc.process import _OWN_CHILDREN
 from rig.proc.record import _record
@@ -58,7 +58,7 @@ def _popen_service(
             with contextlib.suppress(OSError):
                 os.killpg(proc.pid, signal.SIGKILL)
         if isinstance(exc, OSError):
-            raise StackError(f"cannot start service {name}: {exc}") from None
+            raise RigError(f"cannot start service {name}: {exc}") from None
         raise
     else:
         return proc

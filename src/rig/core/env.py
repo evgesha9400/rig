@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from rig.core.constants import BASE_ENV_ALLOWLIST
-from rig.core.errors import StackError
+from rig.core.errors import RigError
 
 
 class _StrictValues(dict):
     def __missing__(self, key):
-        raise StackError(f"unknown placeholder {{{key}}}")
+        raise RigError(f"unknown placeholder {{{key}}}")
 
 
 _FORMATTER = string.Formatter()
@@ -27,7 +27,7 @@ def render(value: Any, values: Mapping[str, Any]) -> Any:
         try:
             return _FORMATTER.vformat(value, (), strict)
         except (IndexError, KeyError) as exc:
-            raise StackError(f"cannot render {value!r}: {exc}") from None
+            raise RigError(f"cannot render {value!r}: {exc}") from None
     if isinstance(value, list):
         return [render(item, values) for item in value]
     if isinstance(value, Mapping):

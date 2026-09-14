@@ -18,7 +18,7 @@ from rig.core.constants import (
     DOCKER_CLIENT_ENV_PASSTHROUGH,
     EXIT_EXTERNAL_TOOL,
 )
-from rig.core.errors import RigError, StackError
+from rig.core.errors import RigError
 
 
 def compose_argv(
@@ -53,7 +53,7 @@ def parse_compose_port(output: str) -> int:
     line = output.strip().splitlines()[-1].strip() if output.strip() else ""
     _, sep, port = line.rpartition(":")
     if not sep or not port.isdigit():
-        raise StackError(f"no published host port in compose output {output!r}")
+        raise RigError(f"no published host port in compose output {output!r}")
     return int(port)
 
 
@@ -77,7 +77,7 @@ def _exec_docker_cmd(
         msg = "docker is not installed or not on PATH"
         raise RigError(msg, code="E_EXTERNAL_TOOL", exit_code=EXIT_EXTERNAL_TOOL) from None
     except subprocess.TimeoutExpired:
-        raise StackError(timeout_msg) from None
+        raise RigError(timeout_msg) from None
 
 
 def _unpack_compose_call(

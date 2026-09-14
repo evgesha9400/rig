@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from rig.core.errors import StackError, manifest_error
+from rig.core.errors import RigError, manifest_error
 from rig.manifest.models import Manifest, Service
 from rig.manifest.parser import _parse_service, _validate_service_integrity
 
@@ -15,7 +15,7 @@ def _load_raw_json(path: Path) -> dict[str, Any]:
     try:
         raw = json.loads(Path(path).read_text())
     except OSError:
-        raise StackError(f"manifest not found: {path}") from None
+        raise RigError(f"manifest not found: {path}") from None
     except json.JSONDecodeError as exc:
         raise manifest_error(f"manifest {path} is not valid JSON: {exc}") from None
     if not isinstance(raw, dict):

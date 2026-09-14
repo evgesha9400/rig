@@ -6,8 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
-import rig.commands as cmds
-from rig.core import constants as const
+from rig import commands
+from rig.core import constants
 from rig.core.errors import RigError, print_json_error
 from rig.core.identity import find_default_manifest, find_project_root
 
@@ -15,10 +15,10 @@ from rig.core.identity import find_default_manifest, find_project_root
 def _dispatch_command(cmd: str, args: argparse.Namespace) -> int:
     root, mf, j = args.root_dir, args.manifest_file, args.as_json
     dispatch = {
-        "up": lambda: cmds.cmd_up(
+        "up": lambda: commands.cmd_up(
             root, mf, scope=args.scope, mode=args.mode, switch=args.switch, as_json=j
         ),
-        "down": lambda: cmds.cmd_down(
+        "down": lambda: commands.cmd_down(
             root,
             mf,
             scope=args.scope,
@@ -26,19 +26,19 @@ def _dispatch_command(cmd: str, args: argparse.Namespace) -> int:
             all_instances=args.all_instances,
             as_json=j,
         ),
-        "status": lambda: cmds.cmd_status(root, mf, as_json=j),
-        "ps": lambda: cmds.cmd_ps(health=args.health, as_json=j),
-        "ls": lambda: cmds.cmd_ps(health=args.health, as_json=j),
-        "list": lambda: cmds.cmd_ps(health=args.health, as_json=j),
-        "prune": lambda: cmds.cmd_prune(force=args.force, as_json=j),
-        "check": lambda: cmds.cmd_check(root, mf, mode=args.mode, as_json=j),
-        "init": lambda: cmds.cmd_init(
+        "status": lambda: commands.cmd_status(root, mf, as_json=j),
+        "ps": lambda: commands.cmd_ps(health=args.health, as_json=j),
+        "ls": lambda: commands.cmd_ps(health=args.health, as_json=j),
+        "list": lambda: commands.cmd_ps(health=args.health, as_json=j),
+        "prune": lambda: commands.cmd_prune(force=args.force, as_json=j),
+        "check": lambda: commands.cmd_check(root, mf, mode=args.mode, as_json=j),
+        "init": lambda: commands.cmd_init(
             root, dry_run=args.dry_run, force=args.force, up=args.up, as_json=j
         ),
-        "schema": lambda: cmds.cmd_schema(as_json=j),
+        "schema": lambda: commands.cmd_schema(as_json=j),
     }
     action = dispatch.get(cmd)
-    return action() if action else const.EXIT_OK
+    return action() if action else constants.EXIT_OK
 
 
 def _print_rig_error(exc: RigError) -> None:
@@ -55,16 +55,18 @@ def _handle_exception(exc: Exception, cmd: str, as_json: bool) -> int:
             _print_rig_error(exc)
         return exc.exit_code
     if isinstance(exc, TimeoutError):
-        err = RigError(str(exc), code="E_LOCK_TIMEOUT", exit_code=const.EXIT_MUTEX_CONFLICT)
+        err = RigError(str(exc), code="E_LOCK_TIMEOUT", exit_code=constants.EXIT_MUTEX_CONFLICT)
         return _handle_exception(err, cmd, as_json)
     if isinstance(exc, KeyboardInterrupt):
         err = RigError(
             "operation cancelled by user",
             code="E_INTERRUPTED",
-            exit_code=const.EXIT_INTERRUPTED,
+            exit_code=constants.EXIT_INTERRUPTED,
         )
         return _handle_exception(err, cmd, as_json)
-    err = RigError(f"unexpected error: {exc}", code="E_INTERNAL", exit_code=const.EXIT_OP_FAILED)
+    err = RigError(
+        f"unexpected error: {exc}", code="E_INTERNAL", exit_code=constants.EXIT_OP_FAILED
+    )
     return _handle_exception(err, cmd, as_json)
 
 

@@ -11,7 +11,7 @@ from rig.commands.up.context import RetryContext
 from rig.commands.up.rollback import _rollback, rollback_started
 from rig.commands.up.service import _await_ready, _start_service
 from rig.core.constants import PORT_RETRY_ATTEMPTS
-from rig.core.errors import RigError, StackError
+from rig.core.errors import RigError
 from rig.core.state import write_state
 from rig.manifest.models import Service
 from rig.net.ports import compute_candidate_ports
@@ -20,7 +20,6 @@ _LAUNCH_EXCEPTIONS = (
     KeyboardInterrupt,
     SystemExit,
     RigError,
-    StackError,
     OSError,
     RuntimeError,
     ValueError,

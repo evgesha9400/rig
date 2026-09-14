@@ -6,11 +6,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from rig.compose import client as cclient
-from rig.compose import context as cctx
+from rig.compose import client
+from rig.compose.context import record_compose_env, record_docker_endpoint
 from rig.compose.docker import docker_record_stop
 from rig.compose.supervisor import compose_record_status
-from rig.core.errors import RigError, StackError
+from rig.core.errors import RigError
 
 
 def _run_compose_teardown(
@@ -19,18 +19,18 @@ def _run_compose_teardown(
     endpoint: tuple[str | None, Any, Any],
 ) -> bool:
     instance, root, compose_file = target
-    context, docker_host, compose_env = endpoint
+    ctx_name, docker_host, compose_env = endpoint
     try:
-        res = cclient.run_compose(
+        res = client.run_compose(
             instance,
             root,
             compose_file,
             args,
-            context,
+            ctx_name,
             env=compose_env,
             docker_host=docker_host,
         )
-    except (StackError, RigError):
+    except RigError:
         return False
     else:
         return res.returncode == 0
@@ -53,7 +53,7 @@ def compose_stop_record(record: Mapping[str, Any], root: Path, remove: bool = Tr
     status = compose_record_status(record, root)
     if status in ("absent", "error"):
         return "stale" if status == "absent" else "failed"
-    if not cclient.compose_file_present(record, root):
+    if not client.compose_file_present(record, root):
         return docker_record_stop(record, remove)
 
     target = (
@@ -62,8 +62,8 @@ def compose_stop_record(record: Mapping[str, Any], root: Path, remove: bool = Tr
         Path(str(record["compose_file"])),
         str(record["compose_service"]),
     )
-    context, docker_host = cctx.record_docker_endpoint(record)
-    endpoint = (context, docker_host, cctx.record_compose_env(record))
+    docker_context, docker_host = record_docker_endpoint(record)
+    endpoint = (docker_context, docker_host, record_compose_env(record))
     should_remove = remove or not record.get("container")
 
     if _teardown_services(target, endpoint, should_remove):

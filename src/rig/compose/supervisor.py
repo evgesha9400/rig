@@ -12,7 +12,7 @@ from rig.compose.docker import (
     docker_container_status,
     docker_record_status,
 )
-from rig.core.errors import RigError, StackError
+from rig.core.errors import RigError
 
 
 def _check_compose_ps(record: Mapping[str, Any], root: Path) -> list[str] | None:
@@ -31,7 +31,7 @@ def _check_compose_ps(record: Mapping[str, Any], root: Path) -> list[str] | None
         )
         if res.returncode == 0:
             return [line.strip() for line in res.stdout.splitlines() if line.strip()]
-    except (StackError, RigError):
+    except RigError:
         pass
     return None
 

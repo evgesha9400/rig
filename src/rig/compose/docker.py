@@ -8,7 +8,7 @@ from typing import Any
 
 from rig.compose.client import run_docker
 from rig.compose.context import INHERIT_DOCKER_HOST, record_compose_env, record_docker_endpoint
-from rig.core.errors import RigError, StackError
+from rig.core.errors import RigError
 
 DOCKER_ABSENT_MARKERS = ("no such object", "no such container")
 
@@ -29,7 +29,7 @@ def docker_label_container_ids(record: Mapping[str, Any]) -> list[str] | None:
             docker_host=docker_host,
             env=record_compose_env(record),
         )
-    except (StackError, RigError):
+    except RigError:
         return None
     if res.returncode != 0:
         return None
@@ -53,7 +53,7 @@ def docker_container_status(
     try:
         cmd = ["inspect", "--format", "{{.State.Status}}", str(container)]
         probe = run_docker(cmd, context, docker_host=docker_host, env=env)
-    except (StackError, RigError):
+    except RigError:
         return "error"
     if probe.returncode != 0:
         return "absent" if docker_reports_no_such_object(probe) else "error"
@@ -94,7 +94,7 @@ def _stop_target(
     for args in cmds:
         try:
             res = run_docker(args, ctx, docker_host=host, env=cenv)
-        except (StackError, RigError):
+        except RigError:
             return False
         if res.returncode == 0:
             continue

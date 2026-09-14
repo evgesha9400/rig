@@ -14,7 +14,7 @@ from rig.compose.starter import _start_compose_service
 from rig.compose.supervisor import compose_record_alive
 from rig.core.constants import EXIT_EXTERNAL_TOOL
 from rig.core.env import build_service_env, render
-from rig.core.errors import RigError, StackError
+from rig.core.errors import RigError
 from rig.core.state import redact
 from rig.manifest.models import Service
 from rig.net.health import wait_for_http
@@ -29,7 +29,7 @@ def _validate_service_env(
 ) -> tuple[Path, dict[str, str]]:
     cwd = (Path(root) / service.cwd).resolve()
     if not cwd.is_dir():
-        raise StackError(f"service {service.name!r} working directory {cwd} does not exist")
+        raise RigError(f"service {service.name!r} working directory {cwd} does not exist")
     if service.type in ("port", "fd") and not shutil.which("lsof"):
         raise RigError(
             "'lsof' required but not on PATH", code="E_EXTERNAL_TOOL", exit_code=EXIT_EXTERNAL_TOOL

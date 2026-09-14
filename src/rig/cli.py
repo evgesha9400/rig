@@ -9,7 +9,7 @@ from types import ModuleType
 from typing import Any
 
 from rig.commands.dispatch import _dispatch_command, _handle_exception, _prepare_args
-from rig.core import constants as const
+from rig.core import constants
 from rig.core.errors import RigError
 from rig.parser import build_parser
 
@@ -92,7 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = parser.parse_args(raw_argv)
     except SystemExit as exc:
-        return exc.code if isinstance(exc.code, int) else const.EXIT_USAGE
+        return exc.code if isinstance(exc.code, int) else constants.EXIT_USAGE
 
     _prepare_args(args, as_json)
     try:

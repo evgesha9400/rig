@@ -11,31 +11,31 @@ import time
 from pathlib import Path
 
 from rig.core.constants import (
+    DIR_MODE_PRIVATE,
+    FILE_MODE_PRIVATE,
     LOCK_FILE_NAME,
     LOCK_TIMEOUT_SECS,
     LOG_DIR_NAME,
     RUNTIME_DIR_NAME,
 )
-from rig.core.errors import StackError
+from rig.core.errors import RigError
 from rig.core.identity import _get_project_name, ensure_instance_dir, instance_id
-
-DIR_PERMISSIONS = 0o700
 
 
 def ensure_runtime_dir(root: Path) -> Path:
     """Ensure ``.local-run`` exists with private permissions."""
     runtime = Path(root) / RUNTIME_DIR_NAME
     if runtime.is_symlink():
-        raise StackError(f"{runtime} is a symlink; refusing to use it as a runtime directory")
-    runtime.mkdir(mode=DIR_PERMISSIONS, exist_ok=True)
+        raise RigError(f"{runtime} is a symlink; refusing to use it as a runtime directory")
+    runtime.mkdir(mode=DIR_MODE_PRIVATE, exist_ok=True)
     info = runtime.lstat()
     if not stat.S_ISDIR(info.st_mode):
-        raise StackError(f"{runtime} is not a directory")
+        raise RigError(f"{runtime} is not a directory")
     if info.st_uid != os.getuid():
-        raise StackError(f"{runtime} is owned by another user")
-    if stat.S_IMODE(info.st_mode) != DIR_PERMISSIONS:
-        os.chmod(runtime, DIR_PERMISSIONS)
-    (runtime / LOG_DIR_NAME).mkdir(mode=DIR_PERMISSIONS, exist_ok=True)
+        raise RigError(f"{runtime} is owned by another user")
+    if stat.S_IMODE(info.st_mode) != DIR_MODE_PRIVATE:
+        os.chmod(runtime, DIR_MODE_PRIVATE)
+    (runtime / LOG_DIR_NAME).mkdir(mode=DIR_MODE_PRIVATE, exist_ok=True)
     (Path(root) / "data").mkdir(parents=True, exist_ok=True)
     return runtime
 
@@ -54,11 +54,11 @@ def _lock_path(target: Path | str, instance: str | None = None) -> Path:
 def _validate_lock_fd(fd: int, path_obj: Path) -> None:
     info = os.fstat(fd)
     if not stat.S_ISREG(info.st_mode):
-        raise StackError(f"{path_obj} is not a regular file")
+        raise RigError(f"{path_obj} is not a regular file")
     if info.st_uid != os.getuid():
-        raise StackError(f"{path_obj} is owned by another user")
+        raise RigError(f"{path_obj} is owned by another user")
     if info.st_nlink != 1:
-        raise StackError(f"{path_obj} has {info.st_nlink} links; refusing to lock it")
+        raise RigError(f"{path_obj} has {info.st_nlink} links; refusing to lock it")
 
 
 def _acquire_blocking(fd: int, path_obj: Path, timeout: float) -> None:
@@ -88,13 +88,15 @@ def _acquire_lock(fd: int, path_obj: Path, timeout: float) -> None:
 
 
 def _open_lock_fd(path_obj: Path) -> int:
-    path_obj.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    path_obj.parent.mkdir(parents=True, mode=DIR_MODE_PRIVATE, exist_ok=True)
     try:
-        return os.open(path_obj, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        return os.open(
+            path_obj, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, FILE_MODE_PRIVATE
+        )
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.EMLINK):
-            raise StackError(f"{path_obj} is a symlink; refusing to lock it") from None
-        raise StackError(f"cannot open lock file {path_obj}: {exc}") from None
+            raise RigError(f"{path_obj} is a symlink; refusing to lock it") from None
+        raise RigError(f"cannot open lock file {path_obj}: {exc}") from None
 
 
 @contextlib.contextmanager

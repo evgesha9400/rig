@@ -1,0 +1,72 @@
+"""Command dispatching and top-level CLI error handling."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import rig.commands as cmds
+from rig.core import constants as const
+from rig.core.errors import RigError, print_json_error
+from rig.core.identity import find_default_manifest, find_project_root
+
+
+def _dispatch_command(cmd: str, args: argparse.Namespace) -> int:
+    root, mf, j = args.root_dir, args.manifest_file, args.as_json
+    dispatch = {
+        "up": lambda: cmds.cmd_up(
+            root, mf, scope=args.scope, mode=args.mode, switch=args.switch, as_json=j
+        ),
+        "down": lambda: cmds.cmd_down(
+            root,
+            mf,
+            scope=args.scope,
+            target=args.target,
+            all_instances=args.all_instances,
+            as_json=j,
+        ),
+        "status": lambda: cmds.cmd_status(root, mf, as_json=j),
+        "ps": lambda: cmds.cmd_ps(health=args.health, as_json=j),
+        "ls": lambda: cmds.cmd_ps(health=args.health, as_json=j),
+        "list": lambda: cmds.cmd_ps(health=args.health, as_json=j),
+        "prune": lambda: cmds.cmd_prune(force=args.force, as_json=j),
+        "check": lambda: cmds.cmd_check(root, mf, mode=args.mode, as_json=j),
+        "init": lambda: cmds.cmd_init(
+            root, dry_run=args.dry_run, force=args.force, up=args.up, as_json=j
+        ),
+        "schema": lambda: cmds.cmd_schema(as_json=j),
+    }
+    action = dispatch.get(cmd)
+    return action() if action else const.EXIT_OK
+
+
+def _handle_exception(exc: Exception, cmd: str, as_json: bool) -> int:
+    if isinstance(exc, RigError):
+        if as_json:
+            print_json_error(exc, command=cmd)
+        else:
+            print(f"rig: error [{exc.code}]: {exc.message}", file=sys.stderr)
+            if exc.hint:
+                print(f"  hint: {exc.hint}", file=sys.stderr)
+        return exc.exit_code
+    if isinstance(exc, TimeoutError):
+        err = RigError(str(exc), code="E_LOCK_TIMEOUT", exit_code=const.EXIT_MUTEX_CONFLICT)
+        return _handle_exception(err, cmd, as_json)
+    if isinstance(exc, KeyboardInterrupt):
+        err = RigError(
+            "operation cancelled by user",
+            code="E_INTERRUPTED",
+            exit_code=const.EXIT_INTERRUPTED,
+        )
+        return _handle_exception(err, cmd, as_json)
+    err = RigError(f"unexpected error: {exc}", code="E_INTERNAL", exit_code=const.EXIT_OP_FAILED)
+    return _handle_exception(err, cmd, as_json)
+
+
+def _prepare_args(args: argparse.Namespace, as_json: bool) -> None:
+    args.as_json = as_json
+    r_arg = getattr(args, "root", None)
+    args.root_dir = Path(r_arg).resolve() if r_arg else find_project_root()
+    m_arg = getattr(args, "manifest", None)
+    args.manifest_file = Path(m_arg).resolve() if m_arg else find_default_manifest(args.root_dir)

@@ -140,6 +140,18 @@
         },
         "description": {
           "type": "string"
+        },
+        "preferred_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Preferred local port for this service. Rig will attempt to allocate this port first."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Alias for preferred_port."
         }
       }
     }

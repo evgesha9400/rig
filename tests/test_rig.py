@@ -45,8 +45,6 @@ def _write_compose_file(root, name="compose.yml"):
     return path
 
 
-
-
 # --------------------------------------------------------------------------------------
 # Instance identification
 # --------------------------------------------------------------------------------------
@@ -165,10 +163,12 @@ def test_lock_contention_within_one_process_times_out(tmp_path):
     runtime = stack.ensure_runtime_dir(tmp_path)
     lock = runtime / "checkout.lock"
 
-    with stack.exclusive_lock(lock, timeout=1.0):
-        with pytest.raises(TimeoutError):
-            with stack.exclusive_lock(lock, timeout=0.2):
-                pytest.fail("the second acquisition must not succeed")
+    with (
+        stack.exclusive_lock(lock, timeout=1.0),
+        pytest.raises(TimeoutError),
+        stack.exclusive_lock(lock, timeout=0.2),
+    ):
+        pytest.fail("the second acquisition must not succeed")
 
 
 def test_lock_contention_respects_a_monotonic_deadline(tmp_path):
@@ -177,9 +177,8 @@ def test_lock_contention_respects_a_monotonic_deadline(tmp_path):
 
     with stack.exclusive_lock(lock, timeout=1.0):
         started = time.monotonic()
-        with pytest.raises(TimeoutError):
-            with stack.exclusive_lock(lock, timeout=0.3):
-                pytest.fail("the second acquisition must not succeed")
+        with pytest.raises(TimeoutError), stack.exclusive_lock(lock, timeout=0.3):
+            pytest.fail("the second acquisition must not succeed")
         elapsed = time.monotonic() - started
 
     assert 0.25 <= elapsed < 3.0
@@ -224,9 +223,8 @@ def test_lock_contention_across_processes_times_out(tmp_path):
     )
     try:
         assert _await_file(ready), f"child never took the lock: {child.communicate()[0]}"
-        with pytest.raises(TimeoutError):
-            with stack.exclusive_lock(lock, timeout=0.3):
-                pytest.fail("the parent must not acquire a lock the child holds")
+        with pytest.raises(TimeoutError), stack.exclusive_lock(lock, timeout=0.3):
+            pytest.fail("the parent must not acquire a lock the child holds")
     finally:
         child.kill()
         child.wait(timeout=5)
@@ -259,9 +257,8 @@ def test_lock_rejects_a_symlinked_lock_path(tmp_path):
     link = runtime / "checkout.lock"
     link.symlink_to(victim)
 
-    with pytest.raises(stack.StackError):
-        with stack.exclusive_lock(link, timeout=0.2):
-            pytest.fail("a symlinked lock path must be refused")
+    with pytest.raises(stack.StackError), stack.exclusive_lock(link, timeout=0.2):
+        pytest.fail("a symlinked lock path must be refused")
 
 
 def test_lock_descriptor_is_close_on_exec(tmp_path):
@@ -292,9 +289,8 @@ def test_allocate_listener_holds_the_port_so_it_cannot_be_stolen():
     listener, port = stack.allocate_listener()
     try:
         thief = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        with thief:
-            with pytest.raises(OSError) as raised:
-                thief.bind(("127.0.0.1", port))
+        with thief, pytest.raises(OSError) as raised:
+            thief.bind(("127.0.0.1", port))
         assert raised.value.errno in (errno.EADDRINUSE, errno.EACCES)
     finally:
         listener.close()
@@ -356,9 +352,8 @@ def test_spawn_fd_service_never_releases_the_port_between_bind_and_start(tmp_pat
     )
     try:
         thief = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        with thief:
-            with pytest.raises(OSError) as raised:
-                thief.bind(("127.0.0.1", record["port"]))
+        with thief, pytest.raises(OSError) as raised:
+            thief.bind(("127.0.0.1", record["port"]))
         assert raised.value.errno in (errno.EADDRINUSE, errno.EACCES)
     finally:
         stack.terminate_record(record, timeout=5.0)
@@ -893,17 +888,13 @@ def test_service_env_resolves_path_placeholders_against_the_project_root(tmp_pat
 
 def test_service_env_rejects_an_unknown_placeholder(tmp_path):
     with pytest.raises(stack.StackError):
-        stack.build_service_env(
-            {"X": "{no_such_value}"}, inherit=[], root=tmp_path, values={}
-        )
+        stack.build_service_env({"X": "{no_such_value}"}, inherit=[], root=tmp_path, values={})
 
 
 def test_service_env_reads_a_declared_env_file_relative_to_the_project_root(tmp_path):
     (tmp_path / ".env").write_text("PLATFORM_TOKEN=from-file\n# comment\nEMPTY=\n")
 
-    env = stack.build_service_env(
-        {}, inherit=[], root=tmp_path, values={}, env_files=[".env"]
-    )
+    env = stack.build_service_env({}, inherit=[], root=tmp_path, values={}, env_files=[".env"])
 
     assert env["PLATFORM_TOKEN"] == "from-file"
     assert env["EMPTY"] == ""
@@ -1068,7 +1059,7 @@ HTTP_PROBE = textwrap.dedent(
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def http_probe(tmp_path):
     """Start a throwaway HTTP server in a separate process and return its port."""
     script = tmp_path / "probe.py"
@@ -1151,7 +1142,9 @@ def test_cli_defaults_to_the_full_scope():
 def test_cli_rejects_an_unknown_scope(tmp_path):
     manifest_path = tmp_path / "stack.json"
     manifest_path.write_text(json.dumps(SAMPLE))
-    ret = stack.main(["--root", str(tmp_path), "--manifest", str(manifest_path), "up", "--scope", "sideways"])
+    ret = stack.main(
+        ["--root", str(tmp_path), "--manifest", str(manifest_path), "up", "--scope", "sideways"]
+    )
     assert ret != 0
 
 
@@ -1239,13 +1232,9 @@ def test_down_refuses_to_remove_a_dependency_a_running_service_still_needs(tmp_p
     runtime = stack.ensure_runtime_dir(tmp_path)
     proc, record = _spawn_sleeper(tmp_path)
     record["name"] = "frontend"
-    stack.write_state(
-        runtime / "state.json", {"generation": 1, "services": {"frontend": record}}
-    )
+    stack.write_state(runtime / "state.json", {"generation": 1, "services": {"frontend": record}})
     try:
-        exit_code = stack.cmd_down(
-            root=tmp_path, manifest_path=manifest_path, scope="backend"
-        )
+        exit_code = stack.cmd_down(root=tmp_path, manifest_path=manifest_path, scope="backend")
 
         assert exit_code != 0
         assert proc.poll() is None
@@ -1645,9 +1634,7 @@ def test_repository_manifest_keeps_the_backend_on_sqlite():
     backend = manifest.services["backend"]
 
     assert backend.env["DATABASE_URL"].startswith("sqlite:")
-    assert not any(
-        service.type == "compose" for service in manifest.services.values()
-    )
+    assert not any(service.type == "compose" for service in manifest.services.values())
 
 
 def test_repository_makefile_include_exposes_every_symmetrical_target():
@@ -1895,9 +1882,7 @@ def test_await_ready_rejects_foreign_port_listener(monkeypatch):
 
 def test_port_listener_matches_filters_foreign_pids(monkeypatch):
     # Foreign process 9999 listening on port
-    mock_run = subprocess.CompletedProcess(
-        args=["lsof"], returncode=0, stdout="9999\n", stderr=""
-    )
+    mock_run = subprocess.CompletedProcess(args=["lsof"], returncode=0, stdout="9999\n", stderr="")
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_run)
     monkeypatch.setattr(os, "getpgid", lambda pid: 9999)
 
@@ -2016,7 +2001,7 @@ def test_cmd_down_preserves_unverifiable_record_and_reports_failure(monkeypatch,
                 "pgid": 1234,
                 "port": 8080,
             }
-        }
+        },
     }
     state_path.write_text(json.dumps(state))
 
@@ -2144,7 +2129,9 @@ def test_rollback_preserves_dependencies_when_dependent_cleanup_fails(monkeypatc
         project="sample",
         services={
             "backend": stack.Service("backend", "fd", Path("."), ["echo"]),
-            "frontend": stack.Service("frontend", "port", Path("."), ["echo"], depends_on=["backend"]),
+            "frontend": stack.Service(
+                "frontend", "port", Path("."), ["echo"], depends_on=["backend"]
+            ),
         },
         scopes={"full": ["backend", "frontend"]},
         path=tmp_path / "stack.json",
@@ -2253,8 +2240,18 @@ def test_cmd_up_recovery_stops_dependents_before_dependencies_and_preserves(monk
                 "project": "sample",
                 "services": {
                     "svc_a": {"type": "port", "cwd": ".", "command": ["echo"]},
-                    "svc_b": {"type": "port", "cwd": ".", "command": ["echo"], "depends_on": ["svc_a"]},
-                    "svc_c": {"type": "port", "cwd": ".", "command": ["echo"], "depends_on": ["svc_b"]},
+                    "svc_b": {
+                        "type": "port",
+                        "cwd": ".",
+                        "command": ["echo"],
+                        "depends_on": ["svc_a"],
+                    },
+                    "svc_c": {
+                        "type": "port",
+                        "cwd": ".",
+                        "command": ["echo"],
+                        "depends_on": ["svc_b"],
+                    },
                 },
                 "scopes": {"full": ["svc_a", "svc_b", "svc_c"]},
             }
@@ -2337,7 +2334,10 @@ def test_start_compose_service_cleans_up_on_port_discovery_failure(monkeypatch, 
         compose_port=5432,
     )
     stopped = []
-    def mock_run_compose(instance, root, compose_file, args, context=None, timeout=180.0, env=None, **kwargs):
+
+    def mock_run_compose(
+        instance, root, compose_file, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         if "up" in args:
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="started", stderr="")
         if "ps" in args:
@@ -2465,8 +2465,10 @@ def test_single_pass_rendering_tolerates_literal_braces_in_paths(monkeypatch, tm
 
     def mock_popen(argv, *args, **kwargs):
         recorded.append(argv)
+
         class MockProc:
             pid = 12345
+
         return MockProc()
 
     monkeypatch.setattr(subprocess, "Popen", mock_popen)
@@ -2563,15 +2565,9 @@ def test_cmd_up_mode_conflict_requires_switch(monkeypatch, tmp_path):
         "project": "mode-test",
         "default_mode": "native",
         "modes": {
-            "native": {
-                "services": {
-                    "backend": {"type": "port", "cwd": ".", "command": ["echo"]}
-                }
-            },
+            "native": {"services": {"backend": {"type": "port", "cwd": ".", "command": ["echo"]}}},
             "container": {
-                "services": {
-                    "backend": {"type": "port", "cwd": ".", "command": ["echo"]}
-                }
+                "services": {"backend": {"type": "port", "cwd": ".", "command": ["echo"]}}
             },
         },
     }
@@ -2599,7 +2595,9 @@ def test_cmd_up_mode_conflict_requires_switch(monkeypatch, tmp_path):
 
     # Bring up with switch=True
     stopped = []
-    monkeypatch.setattr(stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated")
+    monkeypatch.setattr(
+        stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated"
+    )
     ret_switch = stack.cmd_up(tmp_path, manifest_path, mode="container", switch=True)
     assert ret_switch == 0
     assert "backend" in stopped
@@ -2685,7 +2683,9 @@ def test_cmd_down_by_instance_id_and_project_slug(monkeypatch, tmp_path):
     stack.write_state(inst_dir / "state.json", state)
 
     stopped = []
-    monkeypatch.setattr(stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated")
+    monkeypatch.setattr(
+        stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated"
+    )
 
     # Stop by project slug "alpha"
     ret = stack.cmd_down(target="alpha")
@@ -2708,10 +2708,14 @@ def test_cmd_down_ambiguous_slug_error(monkeypatch, tmp_path):
     monkeypatch.setenv("RIG_STATE_HOME", str(state_home))
 
     dir1 = stack.ensure_instance_dir("beta-11111111")
-    stack.write_state(dir1 / "state.json", {"instance": "beta-11111111", "project": "beta", "services": {}})
+    stack.write_state(
+        dir1 / "state.json", {"instance": "beta-11111111", "project": "beta", "services": {}}
+    )
 
     dir2 = stack.ensure_instance_dir("beta-22222222")
-    stack.write_state(dir2 / "state.json", {"instance": "beta-22222222", "project": "beta", "services": {}})
+    stack.write_state(
+        dir2 / "state.json", {"instance": "beta-22222222", "project": "beta", "services": {}}
+    )
 
     with pytest.raises(stack.RigError) as exc_info:
         stack.cmd_down(target="beta")
@@ -2726,17 +2730,27 @@ def test_cmd_down_all(monkeypatch, tmp_path):
     dir1 = stack.ensure_instance_dir("proj1-11111111")
     stack.write_state(
         dir1 / "state.json",
-        {"instance": "proj1-11111111", "project": "proj1", "services": {"s1": {"name": "s1", "type": "port", "pid": 11, "pgid": 11}}},
+        {
+            "instance": "proj1-11111111",
+            "project": "proj1",
+            "services": {"s1": {"name": "s1", "type": "port", "pid": 11, "pgid": 11}},
+        },
     )
 
     dir2 = stack.ensure_instance_dir("proj2-22222222")
     stack.write_state(
         dir2 / "state.json",
-        {"instance": "proj2-22222222", "project": "proj2", "services": {"s2": {"name": "s2", "type": "port", "pid": 22, "pgid": 22}}},
+        {
+            "instance": "proj2-22222222",
+            "project": "proj2",
+            "services": {"s2": {"name": "s2", "type": "port", "pid": 22, "pgid": 22}},
+        },
     )
 
     stopped = []
-    monkeypatch.setattr(stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated")
+    monkeypatch.setattr(
+        stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated"
+    )
 
     ret = stack.cmd_down(all_instances=True)
     assert ret == 0
@@ -2764,7 +2778,9 @@ def test_cmd_down_orphaned_instance(monkeypatch, tmp_path):
     )
 
     stopped = []
-    monkeypatch.setattr(stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated")
+    monkeypatch.setattr(
+        stack, "_stop_record", lambda rec, root: stopped.append(rec["name"]) or "terminated"
+    )
 
     ret = stack.cmd_down(target="orphan-99999999")
     assert ret == 0
@@ -2779,14 +2795,24 @@ def test_cmd_prune(monkeypatch, tmp_path):
     dead_dir = stack.ensure_instance_dir("dead-00000000")
     stack.write_state(
         dead_dir / "state.json",
-        {"instance": "dead-00000000", "project": "dead", "root": str(tmp_path / "nonexistent"), "services": {}},
+        {
+            "instance": "dead-00000000",
+            "project": "dead",
+            "root": str(tmp_path / "nonexistent"),
+            "services": {},
+        },
     )
 
     # Active instance
     alive_dir = stack.ensure_instance_dir("alive-11111111")
     stack.write_state(
         alive_dir / "state.json",
-        {"instance": "alive-11111111", "project": "alive", "root": str(tmp_path), "services": {"s": {"name": "s", "type": "port", "pid": 123, "pgid": 123}}},
+        {
+            "instance": "alive-11111111",
+            "project": "alive",
+            "root": str(tmp_path),
+            "services": {"s": {"name": "s", "type": "port", "pid": 123, "pgid": 123}},
+        },
     )
     monkeypatch.setattr(stack, "pid_alive", lambda pid: True)
     monkeypatch.setattr(stack, "identity_matches", lambda rec: True)
@@ -2806,9 +2832,7 @@ def test_cmd_check(tmp_path):
         json.dumps(
             {
                 "project": "check-test",
-                "services": {
-                    "valid_svc": {"type": "port", "cwd": ".", "command": ["echo"]}
-                },
+                "services": {"valid_svc": {"type": "port", "cwd": ".", "command": ["echo"]}},
             }
         )
     )
@@ -2835,7 +2859,9 @@ def test_cmd_check(tmp_path):
 def test_cmd_init_fastapi_and_package_json(tmp_path):
     proj_dir = tmp_path / "sample_app"
     proj_dir.mkdir()
-    (proj_dir / "pyproject.toml").write_text("[project]\nname = 'sample_app'\ndependencies = ['fastapi', 'uvicorn']\n")
+    (proj_dir / "pyproject.toml").write_text(
+        "[project]\nname = 'sample_app'\ndependencies = ['fastapi', 'uvicorn']\n"
+    )
     (proj_dir / "package.json").write_text('{"name": "frontend", "scripts": {"dev": "vite"}}\n')
 
     ret = stack.cmd_init(proj_dir, dry_run=False)
@@ -2909,15 +2935,15 @@ def test_manifest_for_mode_scopes_isolation(tmp_path):
         "project": "scope-iso",
         "default_mode": "native",
         "modes": {
-            "native": {
-                "services": {
-                    "backend": {"type": "port", "cwd": ".", "command": ["echo"]}
-                }
-            },
+            "native": {"services": {"backend": {"type": "port", "cwd": ".", "command": ["echo"]}}},
             "container": {
                 "services": {
                     "backend": {"type": "port", "cwd": ".", "command": ["echo"]},
-                    "db": {"type": "compose", "compose_file": "compose.yml", "compose_service": "db"},
+                    "db": {
+                        "type": "compose",
+                        "compose_file": "compose.yml",
+                        "compose_service": "db",
+                    },
                 }
             },
         },
@@ -2942,15 +2968,9 @@ def test_cmd_up_switch_aborts_and_preserves_active_mode_when_stop_fails(monkeypa
         "project": "switch-fail",
         "default_mode": "native",
         "modes": {
-            "native": {
-                "services": {
-                    "backend": {"type": "port", "cwd": ".", "command": ["echo"]}
-                }
-            },
+            "native": {"services": {"backend": {"type": "port", "cwd": ".", "command": ["echo"]}}},
             "container": {
-                "services": {
-                    "backend": {"type": "port", "cwd": ".", "command": ["echo"]}
-                }
+                "services": {"backend": {"type": "port", "cwd": ".", "command": ["echo"]}}
             },
         },
     }
@@ -3024,12 +3044,23 @@ def test_manifest_validation_rejects_malformed_structures(tmp_path):
         stack.load_manifest(p)
 
     # env is not a dict
-    p.write_text(json.dumps({"project": "x", "services": {"s": {"type": "port", "command": ["echo"], "env": "foo"}}}))
+    p.write_text(
+        json.dumps(
+            {"project": "x", "services": {"s": {"type": "port", "command": ["echo"], "env": "foo"}}}
+        )
+    )
     with pytest.raises(stack.StackError, match="must be a JSON object"):
         stack.load_manifest(p)
 
     # depends_on is not a list
-    p.write_text(json.dumps({"project": "x", "services": {"s": {"type": "port", "command": ["echo"], "depends_on": "other"}}}))
+    p.write_text(
+        json.dumps(
+            {
+                "project": "x",
+                "services": {"s": {"type": "port", "command": ["echo"], "depends_on": "other"}},
+            }
+        )
+    )
     with pytest.raises(stack.StackError, match="'depends_on' must be a list"):
         stack.load_manifest(p)
 
@@ -3041,8 +3072,6 @@ def test_cmd_init_dangling_symlink(tmp_path):
     with pytest.raises(stack.RigError) as exc_info:
         stack.cmd_init(tmp_path, dry_run=False, force=False)
     assert exc_info.value.code == "E_USAGE"
-
-
 
 
 # --------------------------------------------------------------------------------------
@@ -3163,9 +3192,7 @@ def test_mode_switch_required_when_only_pgid_survives(monkeypatch, tmp_path):
             "project": "pgid-mode",
             "root": str(root),
             "mode": "native",
-            "services": {
-                "backend": {"name": "backend", "type": "port", "pid": 4321, "pgid": 4321}
-            },
+            "services": {"backend": {"name": "backend", "type": "port", "pid": 4321, "pgid": 4321}},
         },
     )
     monkeypatch.setattr(stack, "pid_alive", lambda pid: False)
@@ -3191,9 +3218,7 @@ def test_invalid_scope_rejected_before_any_teardown(monkeypatch, tmp_path):
             "project": "scope-guard",
             "root": str(root),
             "mode": "native",
-            "services": {
-                "backend": {"name": "backend", "type": "port", "pid": 4321, "pgid": 4321}
-            },
+            "services": {"backend": {"name": "backend", "type": "port", "pid": 4321, "pgid": 4321}},
         },
     )
     monkeypatch.setattr(stack, "is_service_verifiable_alive", lambda rec, root: True)
@@ -3303,7 +3328,9 @@ def test_compose_partial_start_persists_container_when_cleanup_fails(monkeypatch
     )
     calls: list[list[str]] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         calls.append(list(args))
         verb = args[0]
         if verb == "up":
@@ -3409,7 +3436,9 @@ def test_down_json_envelope_reports_local_failure(monkeypatch, tmp_path, capsys)
     monkeypatch.setenv("RIG_STATE_HOME", str(tmp_path / "rig_state"))
     manifest_path = tmp_path / "rig.json"
     manifest_path.write_text(
-        json.dumps({"project": "local-fail", "services": {"api": {"type": "port", "command": ["echo"]}}})
+        json.dumps(
+            {"project": "local-fail", "services": {"api": {"type": "port", "command": ["echo"]}}}
+        )
     )
     instance = stack.instance_id("local-fail", tmp_path)
     stack.write_state(
@@ -3467,7 +3496,9 @@ def test_invalid_manifest_reports_usage_exit_code(tmp_path):
 
 def test_fd_service_requires_lsof(monkeypatch, tmp_path):
     """R2-11: fd services verify their listener with lsof, so it must be present."""
-    monkeypatch.setattr(stack.shutil, "which", lambda name: None if name == "lsof" else f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        stack.shutil, "which", lambda name: None if name == "lsof" else f"/usr/bin/{name}"
+    )
     service = stack.Service(name="api", type="fd", app="app:app")
     runtime = stack.ensure_runtime_dir(tmp_path)
     with pytest.raises(stack.RigError) as exc_info:
@@ -3510,9 +3541,7 @@ def test_check_resolves_binaries_against_service_cwd(tmp_path):
         json.dumps(
             {
                 "project": "cwdcheck",
-                "services": {
-                    "app": {"type": "port", "cwd": "sub", "command": ["./bin/other"]}
-                },
+                "services": {"app": {"type": "port", "cwd": "sub", "command": ["./bin/other"]}},
             }
         )
     )
@@ -3553,7 +3582,7 @@ def test_init_compose_detection_ignores_non_database_image(tmp_path):
     proj = tmp_path / "mysqlapp"
     proj.mkdir()
     (proj / "compose.yml").write_text(
-        "services:\n  db:\n    image: mysql:8\n    ports:\n      - \"3306:3306\"\n"
+        'services:\n  db:\n    image: mysql:8\n    ports:\n      - "3306:3306"\n'
     )
     assert stack.cmd_init(proj, dry_run=False) == stack.EXIT_OK
     data = json.loads((proj / "rig.json").read_text())
@@ -3610,7 +3639,9 @@ def test_compose_up_failure_records_partial_when_cleanup_fails(monkeypatch, tmp_
     service = _compose_service()
     calls: list[list[str]] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         calls.append(list(args))
         if args[0] == "up":
             raise stack.StackError("compose command timed out: up")
@@ -3634,7 +3665,9 @@ def test_compose_up_failure_reraises_when_cleanup_succeeds(monkeypatch, tmp_path
     """R3-1: a clean reclaim keeps the original failure and records nothing."""
     service = _compose_service()
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         if args[0] == "up":
             raise stack.StackError("compose command timed out: up")
         return subprocess.CompletedProcess(["docker"], 0, "", "")
@@ -3723,7 +3756,9 @@ def test_stop_record_reclaims_undiscovered_compose_container(monkeypatch, tmp_pa
     _write_compose_file(tmp_path)
     calls: list[list[str]] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         calls.append(list(args))
         return subprocess.CompletedProcess(["docker"], 0, "abc123\n", "")
 
@@ -3927,7 +3962,7 @@ def test_compose_up_passes_no_deps(monkeypatch, tmp_path):
         compose_service="db",
         compose_port=5432,
     )
-    manifest = stack.Manifest(
+    _manifest = stack.Manifest(
         project="proj",
         services={"db": service},
         scopes={"full": ["db"]},
@@ -4022,7 +4057,6 @@ def test_cmd_down_local_orders_by_merged_dependencies(monkeypatch, tmp_path):
     assert stopped_order == ["api", "db"]
 
 
-
 # --------------------------------------------------------------------------------------
 # Round 5: reclaim, recovery and instance status
 # --------------------------------------------------------------------------------------
@@ -4050,7 +4084,9 @@ def test_force_stop_removes_compose_container_before_dropping_record(monkeypatch
     _write_compose_file(tmp_path)
     calls: list[list[str]] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         calls.append(list(args))
         if args and args[0] == "ps":
             return subprocess.CompletedProcess(["docker"], 0, "c0ffee\n", "")
@@ -4080,7 +4116,9 @@ def test_force_stop_retains_record_when_compose_removal_fails(monkeypatch, tmp_p
     _write_compose_file(tmp_path)
     calls: list[list[str]] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         calls.append(list(args))
         if args and args[0] == "ps":
             return subprocess.CompletedProcess(["docker"], 0, "c0ffee\n", "")
@@ -4282,8 +4320,7 @@ def test_cmd_ps_reports_partial_and_orphaned_instances(monkeypatch, tmp_path, ca
 
     assert stack.cmd_ps(as_json=True) == stack.EXIT_OK
     instances = {
-        item["instance"]: item
-        for item in json.loads(capsys.readouterr().out)["data"]["instances"]
+        item["instance"]: item for item in json.loads(capsys.readouterr().out)["data"]["instances"]
     }
 
     assert instances["partial-00000000"]["status"] == "partial"
@@ -4312,9 +4349,7 @@ def _compose_record(root, container="abc123", compose_file="compose.yml", name="
 class _FakeDocker:
     """Answer plain ``docker`` calls from a script and record every invocation."""
 
-    def __init__(
-        self, inspect="running", ps_ids=("abc123",), failing=(), failure_stderr=None
-    ):
+    def __init__(self, inspect="running", ps_ids=("abc123",), failing=(), failure_stderr=None):
         self.inspect = inspect
         self.ps_ids = list(ps_ids)
         self.failing = set(failing)
@@ -4386,7 +4421,9 @@ def test_cmd_down_removes_the_compose_container(monkeypatch, tmp_path):
 
     compose_calls: list[list[str]] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         compose_calls.append(list(args))
         return subprocess.CompletedProcess(["docker"], 0, "abc123\n", "")
 
@@ -4424,7 +4461,9 @@ def test_rollback_removes_the_compose_container(monkeypatch, tmp_path):
 
     compose_calls: list[list[str]] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         compose_calls.append(list(args))
         return subprocess.CompletedProcess(["docker"], 0, "abc123\n", "")
 
@@ -4441,7 +4480,9 @@ def test_stop_record_keeps_the_record_when_removal_fails(monkeypatch, tmp_path):
     """R6-1: a container this rig cannot remove keeps its ownership record."""
     (tmp_path / "compose.yml").write_text("services: {}\n")
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         if args[0] == "rm":
             return subprocess.CompletedProcess(["docker"], 1, "", "rm refused")
         return subprocess.CompletedProcess(["docker"], 0, "abc123\n", "")
@@ -4457,9 +4498,7 @@ def test_stop_record_keeps_the_record_when_removal_fails(monkeypatch, tmp_path):
 # R6-2: a deleted checkout falls back to plain Docker.
 
 
-def test_compose_status_falls_back_to_docker_inspect_when_the_file_is_gone(
-    monkeypatch, tmp_path
-):
+def test_compose_status_falls_back_to_docker_inspect_when_the_file_is_gone(monkeypatch, tmp_path):
     """R6-2: with no compose file, the recorded container ID is inspected directly."""
     _forbid_compose(monkeypatch)
     record = _compose_record(tmp_path / "deleted")
@@ -4672,7 +4711,6 @@ def test_cmd_down_keeps_the_record_when_a_replica_survives(monkeypatch, tmp_path
     assert "db" in stack.read_state(state_file)["services"]
 
 
-
 # R6-3: orphaned instances whose checkout was deleted are reclaimable.
 
 
@@ -4704,9 +4742,7 @@ def test_cmd_down_all_reclaims_an_instance_whose_checkout_was_deleted(
     assert stack.read_state(state_file)["services"] == {}
 
 
-def test_cmd_prune_reclaims_an_instance_whose_checkout_was_deleted(
-    monkeypatch, tmp_path, capsys
-):
+def test_cmd_prune_reclaims_an_instance_whose_checkout_was_deleted(monkeypatch, tmp_path, capsys):
     """R6-3: `prune --force` must reclaim a live container of a deleted checkout."""
     monkeypatch.setenv("RIG_STATE_HOME", str(tmp_path / "rig_state"))
     gone = tmp_path / "deleted-checkout"
@@ -4747,12 +4783,13 @@ def _unanswered_labels_docker(calls: list[list[str]]):
         calls.append(args)
         if args[0] == "ps":
             return subprocess.CompletedProcess(
-                ["docker"], 1, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
+                ["docker"],
+                1,
+                "",
+                "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
             )
         if args[0] == "inspect":
-            return subprocess.CompletedProcess(
-                ["docker"], 1, "", "Error: No such object: abc123"
-            )
+            return subprocess.CompletedProcess(["docker"], 1, "", "Error: No such object: abc123")
         return subprocess.CompletedProcess(["docker"], 0, "", "")
 
     return fake_docker
@@ -4792,9 +4829,7 @@ def _replica_docker(alive_state: str, survivor: str = "beef02"):
     def fake_docker(args, context=None, timeout=60.0, **kwargs):
         args = list(args)
         if args[0] == "inspect" and args[-1] == "abc123":
-            return subprocess.CompletedProcess(
-                ["docker"], 1, "", "Error: No such object: abc123"
-            )
+            return subprocess.CompletedProcess(["docker"], 1, "", "Error: No such object: abc123")
         if args[0] == "inspect" and args[-1] == survivor:
             return subprocess.CompletedProcess(["docker"], 0, f"{alive_state}\n", "")
         return subprocess.CompletedProcess(["docker"], 0, "", "")
@@ -4832,14 +4867,14 @@ def test_compose_status_reports_stopped_when_only_an_unrecorded_replica_remains(
     assert stack.compose_record_status(_compose_record(tmp_path), tmp_path) == "stopped"
 
 
-def test_stop_record_reclaims_a_replica_when_the_recorded_container_is_gone(
-    monkeypatch, tmp_path
-):
+def test_stop_record_reclaims_a_replica_when_the_recorded_container_is_gone(monkeypatch, tmp_path):
     """R8-2: teardown reclaims the surviving replica instead of reporting a stale record."""
     _write_compose_file(tmp_path)
     compose_calls: list[list[str]] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         compose_calls.append(list(args))
         return subprocess.CompletedProcess(["docker"], 0, "beef02\n", "")
 
@@ -4936,9 +4971,7 @@ def test_compose_container_discovery_interrupt_reraises_after_a_clean_reclaim(
     assert ["rm", "-f", "db"] in calls
 
 
-def test_compose_port_discovery_interrupt_records_the_discovered_container(
-    monkeypatch, tmp_path
-):
+def test_compose_port_discovery_interrupt_records_the_discovered_container(monkeypatch, tmp_path):
     """R9-1: an interrupt during port discovery keeps the container ID it found."""
     monkeypatch.setattr(stack, "run_compose", _interrupted_compose("port", cleanup_ok=False))
 
@@ -5128,9 +5161,7 @@ def test_docker_teardown_reaches_the_daemon_recorded_at_startup(monkeypatch, tmp
     assert all(env.get("DOCKER_HOST") == "tcp://remote:2375" for env in seen)
 
 
-def test_a_record_pinned_to_the_local_daemon_ignores_an_ambient_docker_host(
-    monkeypatch, tmp_path
-):
+def test_a_record_pinned_to_the_local_daemon_ignores_an_ambient_docker_host(monkeypatch, tmp_path):
     """R9-2: a record started without DOCKER_HOST keeps asking the local daemon."""
     monkeypatch.setenv("DOCKER_HOST", "tcp://appeared-later:2375")
     seen = _capture_docker_env(monkeypatch)
@@ -5329,9 +5360,7 @@ def _deleted_recorded_container_docker(calls: list[list[str]], survivor="beef02"
     return fake_docker
 
 
-def test_docker_teardown_treats_an_already_deleted_container_as_reclaimed(
-    monkeypatch, tmp_path
-):
+def test_docker_teardown_treats_an_already_deleted_container_as_reclaimed(monkeypatch, tmp_path):
     """R9-4: a gone recorded container must not fail the replica's reclamation."""
     _forbid_compose(monkeypatch)
     calls: list[list[str]] = []
@@ -5358,9 +5387,7 @@ def test_docker_teardown_still_fails_when_a_live_container_refuses(monkeypatch, 
     assert stack.docker_record_stop(_compose_record(tmp_path / "deleted"), remove=True) == "failed"
 
 
-def test_docker_teardown_reports_stale_when_every_target_is_already_gone(
-    monkeypatch, tmp_path
-):
+def test_docker_teardown_reports_stale_when_every_target_is_already_gone(monkeypatch, tmp_path):
     """R9-4: nothing left to reclaim is a clean outcome, not a failure."""
     _forbid_compose(monkeypatch)
     calls: list[list[str]] = []
@@ -5376,7 +5403,9 @@ def test_docker_teardown_reports_stale_when_every_target_is_already_gone(
 
     monkeypatch.setattr(stack, "run_docker", fake_docker)
 
-    assert stack.docker_record_stop(_compose_record(tmp_path / "deleted"), remove=True) == "terminated"
+    assert (
+        stack.docker_record_stop(_compose_record(tmp_path / "deleted"), remove=True) == "terminated"
+    )
     assert ["stop", "abc123"] in calls
 
 
@@ -5462,7 +5491,9 @@ def _print_compose_status(monkeypatch, tmp_path, container_state, service=None, 
 def _status_line(capsys, name: str) -> str:
     """Return the reported line for one service."""
     return next(
-        line for line in capsys.readouterr().out.splitlines() if name in line
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip().startswith(f"{name} ") or line.strip().startswith(f"{name}:")
     )
 
 
@@ -5620,7 +5651,9 @@ def test_compose_up_interrupt_is_recorded_by_cmd_up(monkeypatch, tmp_path):
     ret = stack.cmd_up(tmp_path, manifest_path)
 
     assert ret == stack.EXIT_OP_FAILED
-    state = stack.read_state(stack._state_path(tmp_path, instance=stack.instance_id("ints", tmp_path)))
+    state = stack.read_state(
+        stack._state_path(tmp_path, instance=stack.instance_id("ints", tmp_path))
+    )
     assert "db" in state["services"], "the interrupted container was left unrecorded"
     assert state["services"]["db"]["type"] == "compose"
 
@@ -5664,7 +5697,7 @@ def _compose_requiring_variable(seen=None):
                 ["docker"],
                 1,
                 "",
-                f'required variable {REQUIRED_VAR} is missing a value: required',
+                f"required variable {REQUIRED_VAR} is missing a value: required",
             )
         return subprocess.CompletedProcess(["docker"], 0, "abc123\n", "")
 
@@ -5782,7 +5815,9 @@ def test_compose_env_is_optional_for_records_written_before_it(monkeypatch, tmp_
     _write_compose_file(tmp_path)
     captured: list[dict | None] = []
 
-    def fake_run_compose(instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs):
+    def fake_run_compose(
+        instance, root, cfile, args, context=None, timeout=180.0, env=None, **kwargs
+    ):
         captured.append(None if env is None else dict(env))
         return subprocess.CompletedProcess(["docker"], 0, "abc123\n", "")
 
@@ -5837,9 +5872,7 @@ def test_resolve_docker_context_asks_docker_which_context_is_active(monkeypatch)
         subprocess.CompletedProcess(["docker"], 0, "\n", ""),
     ],
 )
-def test_resolve_docker_context_reports_no_context_when_docker_cannot_answer(
-    monkeypatch, outcome
-):
+def test_resolve_docker_context_reports_no_context_when_docker_cannot_answer(monkeypatch, outcome):
     """R11-1: an unanswered probe leaves the record inheriting the ambient context."""
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
 
@@ -5886,9 +5919,7 @@ def test_compose_start_keeps_the_context_the_manifest_declares(monkeypatch, tmp_
     assert calls and all(call["context"] == "orbstack" for call in calls)
 
 
-def test_compose_start_pins_no_context_when_docker_host_decides_the_daemon(
-    monkeypatch, tmp_path
-):
+def test_compose_start_pins_no_context_when_docker_host_decides_the_daemon(monkeypatch, tmp_path):
     """R11-1: `--context` outranks `DOCKER_HOST`, so a pinned host stays alone."""
     monkeypatch.setenv("DOCKER_HOST", "tcp://remote:2375")
 
@@ -5928,9 +5959,7 @@ def test_compose_start_keeps_the_ambient_docker_context(monkeypatch, tmp_path):
     assert calls[0]["env"] is not None and "DOCKER_CONTEXT" not in calls[0]["env"]
 
 
-def test_compose_start_prefers_the_ambient_context_over_the_ambient_host(
-    monkeypatch, tmp_path
-):
+def test_compose_start_prefers_the_ambient_context_over_the_ambient_host(monkeypatch, tmp_path):
     """R12-1: Docker ranks `DOCKER_CONTEXT` above `DOCKER_HOST`, and so must the record."""
     monkeypatch.setenv("DOCKER_CONTEXT", "colima")
     monkeypatch.setenv("DOCKER_HOST", "tcp://remote:2375")
@@ -5952,9 +5981,7 @@ def test_compose_start_prefers_the_ambient_context_over_the_ambient_host(
     assert all(call["kwargs"]["docker_host"] is None for call in calls)
 
 
-def test_compose_start_prefers_the_declared_context_over_the_ambient_one(
-    monkeypatch, tmp_path
-):
+def test_compose_start_prefers_the_declared_context_over_the_ambient_one(monkeypatch, tmp_path):
     """R12-1: the manifest is explicit, so an ambient context must not displace it."""
     monkeypatch.delenv("DOCKER_HOST", raising=False)
     monkeypatch.setenv("DOCKER_CONTEXT", "desktop-linux")
@@ -5969,9 +5996,7 @@ def test_compose_start_prefers_the_declared_context_over_the_ambient_one(
     assert calls and all(call["context"] == "orbstack" for call in calls)
 
 
-def test_compose_start_resolves_the_active_context_only_as_a_last_resort(
-    monkeypatch, tmp_path
-):
+def test_compose_start_resolves_the_active_context_only_as_a_last_resort(monkeypatch, tmp_path):
     """R12-1: `docker context show` decides only when nothing else names an endpoint."""
     monkeypatch.delenv("DOCKER_HOST", raising=False)
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
@@ -6027,9 +6052,7 @@ def test_docker_status_and_teardown_reach_the_recorded_docker_context(monkeypatc
     monkeypatch.setenv("DOCKER_CONTEXT", "desktop-linux")
     _forbid_compose(monkeypatch)
     argvs = _capture_docker_argv(monkeypatch)
-    record = dict(
-        _compose_record(tmp_path / "deleted"), docker_context="colima", docker_host=None
-    )
+    record = dict(_compose_record(tmp_path / "deleted"), docker_context="colima", docker_host=None)
 
     assert stack.docker_record_status(record) == "alive"
     assert stack.docker_record_stop(record, remove=True) == "terminated"
@@ -6038,16 +6061,12 @@ def test_docker_status_and_teardown_reach_the_recorded_docker_context(monkeypatc
     assert all(argv[:3] == ["docker", "--context", "colima"] for argv in argvs)
 
 
-def test_a_pinned_context_outranks_the_context_named_in_the_environment(
-    monkeypatch, tmp_path
-):
+def test_a_pinned_context_outranks_the_context_named_in_the_environment(monkeypatch, tmp_path):
     """R11-1: an ambient `DOCKER_CONTEXT` must not compete with the pinned one."""
     monkeypatch.delenv("DOCKER_HOST", raising=False)
     monkeypatch.setenv("DOCKER_CONTEXT", "desktop-linux")
     seen = _capture_docker_env(monkeypatch)
-    record = dict(
-        _compose_record(tmp_path / "deleted"), docker_context="colima", docker_host=None
-    )
+    record = dict(_compose_record(tmp_path / "deleted"), docker_context="colima", docker_host=None)
 
     assert stack.docker_record_status(record) == "alive"
     assert seen and all("DOCKER_CONTEXT" not in env for env in seen)
@@ -6068,9 +6087,7 @@ def test_compose_status_and_teardown_reach_the_recorded_docker_context(monkeypat
     assert calls and all(call["context"] == "colima" for call in calls)
 
 
-def test_a_context_switch_between_up_and_down_does_not_strand_the_container(
-    monkeypatch, tmp_path
-):
+def test_a_context_switch_between_up_and_down_does_not_strand_the_container(monkeypatch, tmp_path):
     """R11-1: `down` reaches the context `up` used, so no record is discarded."""
     monkeypatch.setenv("RIG_STATE_HOME", str(tmp_path / "rig_state"))
     monkeypatch.delenv("DOCKER_HOST", raising=False)
@@ -6179,9 +6196,7 @@ def test_run_docker_ignores_a_client_setting_the_record_never_held(monkeypatch, 
     assert "DOCKER_TLS_VERIFY" not in env
 
 
-def test_run_docker_without_a_recorded_environment_uses_the_ambient_settings(
-    monkeypatch, tmp_path
-):
+def test_run_docker_without_a_recorded_environment_uses_the_ambient_settings(monkeypatch, tmp_path):
     """R12-1: a record written before the environment was kept still works."""
     monkeypatch.setenv("DOCKER_CONFIG", "/home/dev/.docker")
     seen = _capture_docker_argv_and_env(monkeypatch)
@@ -6246,3 +6261,174 @@ def test_compose_status_hands_plain_docker_the_recorded_environment(monkeypatch,
 
     assert docker.envs
     assert all(env and env["DOCKER_CONFIG"] == "/srv/rig/.docker" for env in docker.envs)
+
+
+# --------------------------------------------------------------------------------------
+# Stable and Friendly Port Allocation Tests
+# --------------------------------------------------------------------------------------
+
+
+def test_allocate_listener_uses_candidate_port():
+    candidate = 39120
+    if not stack.port_is_free(candidate):
+        pytest.skip(f"Port {candidate} is not free on host")
+    listener, port = stack.allocate_listener([candidate, candidate + 1])
+    try:
+        assert port == candidate
+        assert listener.getsockname() == ("127.0.0.1", candidate)
+    finally:
+        listener.close()
+
+
+def test_allocate_listener_skips_occupied_candidate():
+    port1 = 39121
+    port2 = 39122
+    if not stack.port_is_free(port1) or not stack.port_is_free(port2):
+        pytest.skip("Test ports are not free on host")
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squatter.bind(("127.0.0.1", port1))
+    squatter.listen(1)
+    try:
+        listener, port = stack.allocate_listener([port1, port2])
+        try:
+            assert port == port2
+            assert listener.getsockname() == ("127.0.0.1", port2)
+        finally:
+            listener.close()
+    finally:
+        squatter.close()
+
+
+def test_allocate_listener_falls_back_when_all_candidates_exhausted():
+    port1 = 39123
+    if not stack.port_is_free(port1):
+        pytest.skip(f"Port {port1} is not free on host")
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squatter.bind(("127.0.0.1", port1))
+    squatter.listen(1)
+    try:
+        listener, port = stack.allocate_listener([port1])
+        try:
+            assert port != port1
+            assert port > 0
+        finally:
+            listener.close()
+    finally:
+        squatter.close()
+
+
+def test_compute_candidate_ports_precedence():
+    frontend_svc = stack.Service(name="frontend", type="port", command=["echo"])
+    candidates = stack.compute_candidate_ports(frontend_svc, {})
+    assert candidates[0] == 3000
+    assert candidates[1] == 3001
+
+    backend_svc = stack.Service(name="backend", type="port", command=["echo"])
+    candidates = stack.compute_candidate_ports(backend_svc, {})
+    assert candidates[0] == 8000
+
+    docs_svc = stack.Service(name="docs", type="port", command=["echo"])
+    candidates = stack.compute_candidate_ports(docs_svc, {})
+    assert candidates[0] == 4000
+
+    other_svc = stack.Service(name="metrics", type="port", command=["echo"])
+    candidates = stack.compute_candidate_ports(other_svc, {})
+    assert candidates[0] == 5000
+
+    leased_state = {"ports": {"frontend": 3042}}
+    candidates = stack.compute_candidate_ports(frontend_svc, leased_state)
+    assert candidates[0] == 3042
+
+    custom_svc = stack.Service(name="frontend", type="port", command=["echo"], preferred_port=3099)
+    candidates = stack.compute_candidate_ports(custom_svc, leased_state)
+    assert candidates[0] == 3099
+
+    active_state = {"services": {"other": {"port": 3000}}}
+    candidates = stack.compute_candidate_ports(frontend_svc, active_state, avoid={3001})
+    assert 3000 not in candidates
+    assert 3001 not in candidates
+    assert candidates[0] == 3002
+
+
+def test_manifest_parses_preferred_port_and_alias(tmp_path):
+    manifest_file = tmp_path / "rig.json"
+    manifest_file.write_text(
+        json.dumps(
+            {
+                "project": "sample",
+                "services": {
+                    "web": {
+                        "type": "port",
+                        "command": ["echo", "{port}"],
+                        "preferred_port": 3456,
+                    },
+                    "api": {
+                        "type": "port",
+                        "command": ["echo", "{port}"],
+                        "port": 8765,
+                    },
+                },
+            }
+        )
+    )
+    manifest = stack.load_manifest(manifest_file)
+    assert manifest.services["web"].preferred_port == 3456
+    assert manifest.services["api"].preferred_port == 8765
+
+    bad_manifest = tmp_path / "bad.json"
+    bad_manifest.write_text(
+        json.dumps(
+            {
+                "project": "sample",
+                "services": {
+                    "web": {
+                        "type": "port",
+                        "command": ["echo"],
+                        "preferred_port": 999999,
+                    }
+                },
+            }
+        )
+    )
+    with pytest.raises(stack.RigError) as exc_info:
+        stack.load_manifest(bad_manifest)
+    assert "preferred_port" in str(exc_info.value)
+
+
+def test_cmd_up_sticky_ports_across_restarts(tmp_path):
+    script = tmp_path / "binder.py"
+    script.write_text(STRICT_BINDER)
+    manifest_file = tmp_path / "rig.json"
+    manifest_file.write_text(
+        json.dumps(
+            {
+                "project": "sticky-sample",
+                "services": {
+                    "ui": {
+                        "type": "port",
+                        "cwd": ".",
+                        "command": [sys.executable, str(script), "--port", "{port}"],
+                        "healthcheck_path": None,
+                    }
+                },
+            }
+        )
+    )
+    runtime = stack.ensure_runtime_dir(tmp_path)
+    try:
+        assert stack.cmd_up(root=tmp_path, manifest_path=manifest_file, scope="full") == 0
+        state1 = stack.read_state(runtime / "state.json")
+        port1 = state1["services"]["ui"]["port"]
+        assert state1["ports"]["ui"] == port1
+
+        assert stack.cmd_down(root=tmp_path, manifest_path=manifest_file, scope="full") == 0
+        state_after_down = stack.read_state(runtime / "state.json")
+        assert state_after_down["services"] == {}
+        assert state_after_down["ports"]["ui"] == port1
+
+        assert stack.cmd_up(root=tmp_path, manifest_path=manifest_file, scope="full") == 0
+        state2 = stack.read_state(runtime / "state.json")
+        port2 = state2["services"]["ui"]["port"]
+        assert port2 == port1
+    finally:
+        stack.cmd_down(root=tmp_path, manifest_path=manifest_file, scope="full")

@@ -51,7 +51,6 @@ def check_cycles(root_dir: Path) -> int:
         print(f"❌ CYCLE AUDIT FAILED: '{src_dir}' directory not found.")
         return 1
 
-    sys.path.insert(0, str(src_dir))
     top_packages = _discover_top_packages(src_dir)
     if not top_packages:
         print(f"❌ CYCLE AUDIT FAILED: No packages found in '{src_dir}'.")

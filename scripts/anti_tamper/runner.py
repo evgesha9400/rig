@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from anti_tamper.configs import check_competing_configs, check_nested_configs
-from anti_tamper.deps import check_dependencies, get_runtime_status
-from anti_tamper.pragmas import check_suppressions
-from anti_tamper.schemas import check_jscpd_config, check_ruff_config
+from .configs import check_competing_configs, check_nested_configs
+from .deps import check_dependencies, get_runtime_status
+from .pragmas import check_suppressions
+from .schemas import check_jscpd_config, check_ruff_config
 
 
 def run_audit(root: Path) -> int:

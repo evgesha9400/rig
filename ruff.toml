@@ -20,11 +20,15 @@ select = [
     "PIE",    # flake8-pie
     "RUF",    # ruff-specific rules
     "PT",     # flake8-pytest-style (lean tests)
+    "TID251", # flake8-tidy-imports (ban sys.path hacks)
 ]
 
 ignore = [
     "TRY003", # Avoid long exception messages in raise
 ]
+
+[lint.flake8-tidy-imports.banned-api]
+"sys.path".msg = "Do not mutate sys.path. Use package execution (-m), editable installs, or virtualenvs."
 
 [lint.mccabe]
 # Invariant 2: Cognitive Simplicity

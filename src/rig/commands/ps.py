@@ -103,14 +103,18 @@ def _print_table(instances: list[dict[str, Any]]) -> None:
         print(line)
 
 
-def cmd_ps(health: bool = False, as_json: bool = False) -> int:
-    instances_dir = get_instances_dir()
+def _collect_instances(instances_dir: Path, health: bool) -> list[dict[str, Any]]:
+    if not instances_dir.is_dir():
+        return []
     instances_data = []
-    if instances_dir.is_dir():
-        for d in sorted(instances_dir.iterdir()):
-            if d.is_dir() and (info := _summarize_instance(d, health)):
-                instances_data.append(info)
+    for d in sorted(instances_dir.iterdir()):
+        if d.is_dir() and (info := _summarize_instance(d, health)):
+            instances_data.append(info)
+    return instances_data
 
+
+def cmd_ps(health: bool = False, as_json: bool = False) -> int:
+    instances_data = _collect_instances(get_instances_dir(), health)
     if as_json:
         print_json_envelope("ps", {"instances": instances_data})
         return EXIT_OK

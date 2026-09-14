@@ -107,17 +107,21 @@ def run_compose(
     return _exec_docker_cmd(argv, cmd_env, (timeout, msg))
 
 
+def _apply_env_passthrough(cmd_env: dict[str, str], env: Mapping[str, str]) -> None:
+    for name in DOCKER_CLIENT_ENV_PASSTHROUGH:
+        value = env.get(name)
+        if value is None:
+            cmd_env.pop(name, None)
+        else:
+            cmd_env[name] = str(value)
+
+
 def _prepare_docker_env(
     env: Mapping[str, str] | None, context: str | None, docker_host: Any
 ) -> dict[str, str]:
     cmd_env = dict(os.environ)
     if env is not None:
-        for name in DOCKER_CLIENT_ENV_PASSTHROUGH:
-            value = env.get(name)
-            if value is None:
-                cmd_env.pop(name, None)
-            else:
-                cmd_env[name] = str(value)
+        _apply_env_passthrough(cmd_env, env)
     _pin_docker_endpoint(cmd_env, context, docker_host)
     return cmd_env
 
@@ -134,10 +138,8 @@ def run_docker(
     docker_host = p.pop(0) if p else kwargs.get("docker_host", INHERIT_DOCKER_HOST)
     env = p.pop(0) if p else kwargs.get("env")
 
-    argv = ["docker"]
-    if context:
-        argv += ["--context", str(context)]
-    argv += list(args)
+    argv = ["docker", "--context", str(context)] if context else ["docker"]
+    argv.extend(args)
     cmd_env = _prepare_docker_env(env, context, docker_host)
     msg = f"docker command timed out: {' '.join(args)}"
     return _exec_docker_cmd(argv, cmd_env, (timeout, msg))

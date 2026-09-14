@@ -18,6 +18,17 @@ from rig.core.state import write_state
 from rig.manifest.models import Manifest
 
 
+def _track_consumer(
+    dep: str, svcs: dict[str, Any], tracking: tuple[set[str], list[str], set[str]]
+) -> None:
+    affected, queue, seen = tracking
+    if dep in svcs:
+        affected.add(dep)
+    if dep not in seen:
+        seen.add(dep)
+        queue.append(dep)
+
+
 def _find_affected(
     order: list[str], manifest: Manifest, state_and_root: tuple[dict[str, Any], Path]
 ) -> set[str]:
@@ -28,11 +39,7 @@ def _find_affected(
     while queue:
         curr = queue.pop(0)
         for dep in _consumers_of(curr, svcs, manifest):
-            if dep in svcs:
-                affected.add(dep)
-            if dep not in seen:
-                seen.add(dep)
-                queue.append(dep)
+            _track_consumer(dep, svcs, (affected, queue, seen))
     return affected
 
 

@@ -128,23 +128,21 @@ def _collect_prune_results(
     instances_dir: Path, force: bool
 ) -> tuple[list[str], list[dict[str, Any]]]:
     pruned, failed = [], []
-    for inst_dir in sorted(instances_dir.iterdir()):
-        if inst_dir.is_dir():
-            p, f = _prune_instance(inst_dir, force)
-            if p:
-                pruned.append(p)
-            if f:
-                failed.append(f)
+    dirs = [d for d in sorted(instances_dir.iterdir()) if d.is_dir()]
+    for inst_dir in dirs:
+        p, f = _prune_instance(inst_dir, force)
+        if p:
+            pruned.append(p)
+        if f:
+            failed.append(f)
     return pruned, failed
 
 
 def cmd_prune(force: bool = False, as_json: bool = False) -> int:
     instances_dir = get_instances_dir()
-    if not instances_dir.is_dir():
-        if as_json:
-            print_json_envelope("prune", {"pruned": [], "failed": []})
-        return EXIT_OK
-    pruned, failed = _collect_prune_results(instances_dir, force)
+    pruned, failed = (
+        _collect_prune_results(instances_dir, force) if instances_dir.is_dir() else ([], [])
+    )
     if as_json:
         print_json_envelope("prune", {"pruned": pruned, "failed": failed}, ok=not failed)
     return EXIT_OP_FAILED if failed else EXIT_OK

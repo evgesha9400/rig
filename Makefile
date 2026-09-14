@@ -21,10 +21,11 @@ check-quality:
 	uv run ruff check --config ruff.toml --ignore-noqa src/
 	uv run ruff check --config ruff.toml .
 	uv run ruff format --config ruff.toml --check .
-	npx jscpd@^4.0.0 src/ --threshold 0 --min-tokens 40 --min-lines 5 --format python
+	npx jscpd@^4.0.0 src/ scripts/ --threshold 0 --min-tokens 40 --min-lines 5 --format python
 	uv run python scripts/check_density.py
-	uv run python scripts/check_lines.py
-	uv run pylint --rcfile=pyproject.toml --recursive=y --persistent=n --disable=all --enable=C0302,E0001,F0001,F0010 src/
+	uv run python scripts/check_lines.py src 150
+	uv run python scripts/check_lines.py scripts 150
+	uv run pylint --rcfile=pyproject.toml --recursive=y --persistent=n --disable=all --enable=C0302,R1702,E0001,F0001,F0010 src/ scripts/
 	uv run lint-imports
 	uv run deptry .
 	uv run --isolated --python 3.10 python -c "import rig"

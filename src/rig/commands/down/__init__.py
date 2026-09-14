@@ -76,15 +76,21 @@ def _down_all_instances(as_json: bool) -> int:
     return EXIT_OP_FAILED if failed_any else EXIT_OK
 
 
+def _matches_target(d: Path, target: str) -> bool:
+    if not (d.is_dir() and (d / STATE_FILE_NAME).is_file()):
+        return False
+    proj = read_state(d / STATE_FILE_NAME).get("project") or d.name.rsplit("-", 1)[0]
+    return target.lower() in (d.name.lower(), proj.lower()) or d.name == target
+
+
+def _find_matching_instances(instances_dir: Path, target: str) -> list[Path]:
+    if not instances_dir.is_dir():
+        return []
+    return [d for d in sorted(instances_dir.iterdir()) if _matches_target(d, target)]
+
+
 def _find_target(target: str) -> Path:
-    instances_dir = get_instances_dir()
-    matched = []
-    if instances_dir.is_dir():
-        for d in sorted(instances_dir.iterdir()):
-            if d.is_dir() and (d / STATE_FILE_NAME).is_file():
-                proj = read_state(d / STATE_FILE_NAME).get("project") or d.name.rsplit("-", 1)[0]
-                if target.lower() in (d.name.lower(), proj.lower()) or d.name == target:
-                    matched.append(d)
+    matched = _find_matching_instances(get_instances_dir(), target)
     if not matched:
         msg = f"no instance found matching {target!r}"
         raise RigError(msg, code="E_NOT_FOUND", exit_code=EXIT_NOT_FOUND)

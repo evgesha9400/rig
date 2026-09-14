@@ -40,16 +40,46 @@ def _build_mode_services(raw_modes: Any) -> dict[str, dict[str, Service]]:
     return modes
 
 
+def _register_service_aliases(
+    item: tuple[str, Service], services: dict[str, Service], derived: dict[str, list[str]]
+) -> None:
+    sname, service = item
+    derived[sname] = [sname]
+    for alias in service.aliases:
+        if not isinstance(alias, str) or not alias:
+            raise manifest_error(f"service {sname!r} has invalid alias {alias!r}")
+        if alias in services and alias != sname:
+            msg = f"alias {alias!r} for service {sname!r} conflicts with another service"
+            raise manifest_error(msg)
+        derived[alias] = [sname]
+
+
 def _add_service_aliases(derived: dict[str, list[str]], services: dict[str, Service]) -> None:
-    for sname, s in services.items():
-        derived[sname] = [sname]
-        for alias in s.aliases:
-            if not isinstance(alias, str) or not alias:
-                raise manifest_error(f"service {sname!r} has invalid alias {alias!r}")
-            if alias in services and alias != sname:
-                msg = f"alias {alias!r} for service {sname!r} conflicts with another service"
-                raise manifest_error(msg)
-            derived[alias] = [sname]
+    for item in services.items():
+        _register_service_aliases(item, services, derived)
+
+
+def _validate_scope_members(scope: str, members: list[str], known: set[str]) -> None:
+    for m in members:
+        if m not in known:
+            raise manifest_error(f"scope {scope!r} names unknown service {m!r}")
+
+
+def _parse_explicit_scopes(
+    scopes_raw: Any, initial_services: dict[str, Service]
+) -> dict[str, list[str]]:
+    if scopes_raw is None:
+        return {}
+    if not isinstance(scopes_raw, dict):
+        raise manifest_error("'scopes' must be a JSON object")
+    explicit: dict[str, list[str]] = {}
+    known = set(initial_services)
+    for scope, members in scopes_raw.items():
+        if not isinstance(members, list) or not all(isinstance(m, str) for m in members):
+            raise manifest_error(f"scope {scope!r} must be a list of string service names")
+        _validate_scope_members(scope, members, known)
+        explicit[scope] = list(members)
+    return explicit
 
 
 def _derive_scopes(
@@ -60,18 +90,8 @@ def _derive_scopes(
         "local": list(initial_services),
     }
     _add_service_aliases(derived, initial_services)
-    explicit: dict[str, list[str]] = {}
-    if scopes_raw is not None:
-        if not isinstance(scopes_raw, dict):
-            raise manifest_error("'scopes' must be a JSON object")
-        for scope, members in scopes_raw.items():
-            if not isinstance(members, list) or not all(isinstance(m, str) for m in members):
-                raise manifest_error(f"scope {scope!r} must be a list of string service names")
-            for m in members:
-                if m not in initial_services:
-                    raise manifest_error(f"scope {scope!r} names unknown service {m!r}")
-            derived[scope] = list(members)
-            explicit[scope] = list(members)
+    explicit = _parse_explicit_scopes(scopes_raw, initial_services)
+    derived.update(explicit)
     return derived, explicit
 
 

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 MAX_FILES_PER_DIR = 10
-SCAN_DIRS = ["src"]
+SCAN_DIRS = ["src", "scripts"]
 IGNORED_DIR_NAMES = {"__pycache__"}
 
 

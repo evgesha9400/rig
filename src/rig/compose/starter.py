@@ -20,15 +20,19 @@ from rig.core.constants import DOCKER_CLIENT_ENV_PASSTHROUGH, EXIT_OP_FAILED
 from rig.core.errors import RigError
 
 
+def _inherit_docker_client_env(cmd_env: dict[str, str]) -> None:
+    for name in DOCKER_CLIENT_ENV_PASSTHROUGH:
+        if name not in cmd_env and name in os.environ:
+            cmd_env[name] = os.environ[name]
+
+
 def _resolve_compose_endpoints(
     service: Any, env: Mapping[str, str] | None
 ) -> tuple[dict[str, str] | None, str | None, str | None]:
     docker_host = os.environ.get("DOCKER_HOST")
     cmd_env = dict(env) if env is not None else None
     if cmd_env is not None:
-        for name in DOCKER_CLIENT_ENV_PASSTHROUGH:
-            if name not in cmd_env and name in os.environ:
-                cmd_env[name] = os.environ[name]
+        _inherit_docker_client_env(cmd_env)
     docker_context = service.docker_context or os.environ.get("DOCKER_CONTEXT") or None
     if docker_context is None and not docker_host:
         docker_context = resolve_current_docker_context(cmd_env)
@@ -37,22 +41,34 @@ def _resolve_compose_endpoints(
     return cmd_env, docker_context, docker_host
 
 
+def _run_cleanup_step(
+    target: tuple[str, Path, Path, str],
+    endpoint: tuple[str | None, dict[str, str] | None, str | None],
+    action: list[str],
+) -> bool | None:
+    instance, root, cfile, _ = target
+    ctx, env, host = endpoint
+    try:
+        res = run_compose(
+            instance, root, cfile, action, ctx, timeout=30.0, env=env, docker_host=host
+        )
+    except INTERRUPTION_EXCEPTIONS:
+        return None
+    else:
+        return res.returncode == 0
+
+
 def _cleanup_compose(
     target: tuple[str, Path, Path, str],
     endpoint: tuple[str | None, dict[str, str] | None, str | None],
 ) -> bool:
-    instance, root, cfile, svc = target
-    ctx, env, host = endpoint
     removed = True
-    for args in (["stop", svc], ["rm", "-f", svc]):
-        try:
-            res = run_compose(
-                instance, root, cfile, args, ctx, timeout=30.0, env=env, docker_host=host
-            )
-            if res.returncode != 0:
-                removed = False
-        except INTERRUPTION_EXCEPTIONS:
+    for args in (["stop", target[3]], ["rm", "-f", target[3]]):
+        ok = _run_cleanup_step(target, endpoint, args)
+        if ok is None:
             return False
+        if not ok:
+            removed = False
     return removed
 
 

@@ -27,13 +27,22 @@ def _bind_candidate_port(port: int) -> tuple[socket.socket, int] | None:
         return listener, port
 
 
+def _find_candidate_listener(
+    candidate_ports: Sequence[int],
+) -> tuple[socket.socket, int] | None:
+    for port in candidate_ports:
+        res = _bind_candidate_port(port)
+        if res is not None:
+            return res
+    return None
+
+
 def allocate_listener(candidate_ports: Sequence[int] | None = None) -> tuple[socket.socket, int]:
     """Bind and listen on a loopback port, keeping ownership of it."""
     if candidate_ports:
-        for port in candidate_ports:
-            res = _bind_candidate_port(port)
-            if res is not None:
-                return res
+        candidate = _find_candidate_listener(candidate_ports)
+        if candidate is not None:
+            return candidate
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -135,9 +144,5 @@ def compute_candidate_ports(
     """Compute an ordered list of candidate ports for a service."""
     excluded = _collect_excluded_ports(state, avoid)
     base_port = _resolve_base_port(service, state)
-    candidates: list[int] = []
     limit = min(base_port + DEFAULT_PORT_WINDOW, PORT_MAX + 1)
-    for port in range(base_port, limit):
-        if port not in excluded:
-            candidates.append(port)
-    return candidates
+    return [port for port in range(base_port, limit) if port not in excluded]

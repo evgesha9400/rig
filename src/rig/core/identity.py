@@ -79,21 +79,19 @@ def get_boot_id() -> str:
 
 def is_locked(path: Path) -> bool:
     """Return True if path is currently held under exclusive advisory lock."""
-    target = Path(path)
-    if not target.exists():
+    if not (target := Path(path)).exists():
         return False
     try:
         fd = os.open(target, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, FILE_MODE_PRIVATE)
     except OSError:
         return False
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except (BlockingIOError, InterruptedError):
-            return True
-        else:
-            return False
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except (BlockingIOError, InterruptedError):
+        return True
+    else:
+        return False
     finally:
         os.close(fd)
 
@@ -108,13 +106,16 @@ _PROJECT_CANDIDATES = (
 )
 
 
+def _has_root_marker(directory: Path) -> bool:
+    return any((directory / c).exists() for c in (*_PROJECT_CANDIDATES, ".git"))
+
+
 def find_project_root(start: Path | None = None) -> Path:
     """Find project root by walking upward from current working directory."""
     current = (start or Path.cwd()).resolve()
     for parent in [current, *current.parents]:
-        for candidate in (*_PROJECT_CANDIDATES, ".git"):
-            if (parent / candidate).exists():
-                return parent
+        if _has_root_marker(parent):
+            return parent
     return current
 
 
@@ -127,15 +128,22 @@ def find_default_manifest(root: Path) -> Path:
     return root / _PROJECT_CANDIDATES[0]
 
 
+def _read_project_from_manifest(manifest_path: Path) -> str | None:
+    if not manifest_path.is_file():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, dict) and data.get("project"):
+        return str(data["project"])
+    return None
+
+
 def _get_project_name(root: Path) -> str:
     root = Path(root).resolve()
     for rel in _PROJECT_CANDIDATES:
-        manifest_path = root / rel
-        if manifest_path.is_file():
-            try:
-                data = json.loads(manifest_path.read_text())
-                if isinstance(data, dict) and data.get("project"):
-                    return str(data["project"])
-            except (OSError, json.JSONDecodeError):
-                pass
+        name = _read_project_from_manifest(root / rel)
+        if name:
+            return name
     return root.name

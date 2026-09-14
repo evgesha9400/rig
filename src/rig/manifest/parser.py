@@ -105,11 +105,15 @@ def _parse_service(name: str, raw_spec: Any) -> Service:
     return Service(name=name, **spec)
 
 
+def _check_dependencies(name: str, service: Service, services: Mapping[str, Service]) -> None:
+    for dependency in service.depends_on:
+        if dependency not in services:
+            raise manifest_error(f"service {name!r} depends on unknown service {dependency!r}")
+
+
 def _validate_service_integrity(services: Mapping[str, Service]) -> None:
     for name, service in services.items():
-        for dependency in service.depends_on:
-            if dependency not in services:
-                raise manifest_error(f"service {name!r} depends on unknown service {dependency!r}")
+        _check_dependencies(name, service, services)
         if service.type == "fd" and not (service.command or service.app):
             raise manifest_error(f"service {name!r} needs a 'command' or an 'app'")
         if service.type == "port" and not service.command:

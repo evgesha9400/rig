@@ -32,12 +32,8 @@ def empty_state() -> dict[str, Any]:
 def read_state(path: Path) -> dict[str, Any]:
     """Return persisted state, or an empty stack when it is absent or unreadable."""
     try:
-        raw = Path(path).read_text()
-    except OSError:
-        return empty_state()
-    try:
-        state = json.loads(raw)
-    except json.JSONDecodeError:
+        state = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
         return empty_state()
     if not isinstance(state, dict):
         return empty_state()
@@ -52,10 +48,8 @@ def read_state(path: Path) -> dict[str, Any]:
 def resolve_state_file(path: Path) -> Path:
     p = Path(path)
     if p.is_symlink():
-        try:
+        with contextlib.suppress(OSError):
             return p.resolve()
-        except OSError:
-            pass
     return p
 
 
@@ -92,31 +86,38 @@ def write_state(path: Path, state: Mapping[str, Any]) -> None:
 def redact(value: Any) -> Any:
     """Return ``value`` with secret-looking mapping entries masked."""
     if isinstance(value, Mapping):
-        masked: dict[str, Any] = {}
-        for key, item in value.items():
-            is_sec = isinstance(key, str) and SECRET_NAME_PATTERN.search(key)
-            masked[key] = REDACTED if is_sec else redact(item)
-        return masked
+        return {
+            k: REDACTED if isinstance(k, str) and SECRET_NAME_PATTERN.search(k) else redact(v)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [redact(item) for item in value]
     return value
 
 
-def _sync_state_symlink(local_state: Path, authoritative_state: Path) -> None:
-    try:
-        if local_state.is_symlink():
-            if local_state.resolve() != authoritative_state.resolve():
-                local_state.unlink()
-                local_state.symlink_to(authoritative_state)
-        elif local_state.is_file():
-            if not authoritative_state.exists():
-                shutil.copy2(local_state, authoritative_state)
+def _relink_symlink(local_state: Path, target: Path) -> None:
+    with contextlib.suppress(OSError):
+        if local_state.resolve() != target.resolve():
             local_state.unlink()
+            local_state.symlink_to(target)
+
+
+def _relink_file(local_state: Path, target: Path) -> None:
+    with contextlib.suppress(OSError):
+        if not target.exists():
+            shutil.copy2(local_state, target)
+        local_state.unlink()
+        local_state.symlink_to(target)
+
+
+def _sync_state_symlink(local_state: Path, authoritative_state: Path) -> None:
+    if local_state.is_symlink():
+        _relink_symlink(local_state, authoritative_state)
+    elif local_state.is_file():
+        _relink_file(local_state, authoritative_state)
+    elif not local_state.exists():
+        with contextlib.suppress(OSError):
             local_state.symlink_to(authoritative_state)
-        elif not local_state.exists():
-            local_state.symlink_to(authoritative_state)
-    except OSError:
-        pass
 
 
 def _resolve_instance(target: str) -> Path | None:

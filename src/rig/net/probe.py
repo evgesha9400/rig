@@ -25,16 +25,17 @@ def run_query_command(cmd: Sequence[str], timeout: float = 1.0) -> str | None:
     return proc.stdout.strip()
 
 
+def _matches_pgid(p: int, pgid: int) -> bool:
+    try:
+        return os.getpgid(p) == pgid
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
 def _is_pid_owned(p: int, pid: int | None, pgid: int | None) -> bool:
     if pid is not None and p == pid:
         return True
-    if pgid is not None:
-        try:
-            if os.getpgid(p) == pgid:
-                return True
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    return False
+    return bool(pgid is not None and _matches_pgid(p, pgid))
 
 
 def _get_listener_pids(port: int) -> list[int]:

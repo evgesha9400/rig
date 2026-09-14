@@ -8,10 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from rig.compose.stopper import compose_stop_record
-from rig.compose.supervisor import (
-    compose_record_alive,
-    compose_record_status,
-)
+from rig.compose.supervisor import compose_record_alive, compose_record_status
 from rig.core.constants import TEARDOWN_TIMEOUT_SECS
 from rig.core.identity import instance_id
 from rig.core.locks import _lock_path, ensure_runtime_dir
@@ -64,14 +61,10 @@ def _is_dead(rec: Mapping[str, Any], root: Path) -> bool:
 def prune_state(state: dict[str, Any], root: Path) -> list[str]:
     dropped = [n for n, r in list(state.get("services", {}).items()) if _is_dead(r, root)]
     for name in dropped:
-        record = state["services"].pop(name, None) or {}
-        port = record.get("port")
-        if port and not port_is_free(int(port)):
-            print(
-                f"  warning: {name} is no longer verifiable but port {port} is still in "
-                f"use (pid {record.get('pid')} may be orphaned); inspect it manually",
-                file=sys.stderr,
-            )
+        rec = state["services"].pop(name, None) or {}
+        if (port := rec.get("port")) and not port_is_free(int(port)):
+            warn = f"  warning: {name} port {port} in use (pid {rec.get('pid')} may be orphaned)"
+            print(warn, file=sys.stderr)
     return dropped
 
 
@@ -114,6 +107,11 @@ def _consumers_of(
     return consumers - {name}
 
 
+def _drain_ready_deps(deps: set[str], in_degree: dict[str, int]) -> list[str]:
+    in_degree.update({d: in_degree[d] - 1 for d in deps})
+    return [d for d in deps if in_degree[d] == 0]
+
+
 def reverse_dependency_order(services: Mapping[str, Mapping[str, Any]]) -> list[str]:
     in_degree = {k: 0 for k in services}
     dep_map = {k: set() for k in services}
@@ -126,10 +124,7 @@ def reverse_dependency_order(services: Mapping[str, Mapping[str, Any]]) -> list[
     while queue:
         curr = queue.pop(0)
         order.append(curr)
-        for dep in dep_map[curr]:
-            in_degree[dep] -= 1
-            if in_degree[dep] == 0:
-                queue.append(dep)
+        queue.extend(_drain_ready_deps(dep_map[curr], in_degree))
     return order + [k for k in services if k not in order]
 
 
@@ -144,6 +139,10 @@ def _resolve_manifest_context(root: Path, manifest_path: Path):
     resolved_root = Path(root).resolve()
     ensure_runtime_dir(resolved_root)
     instance = instance_id(raw_manifest.project, resolved_root)
-    state_path = _state_path(resolved_root, instance=instance)
-    lock_path = _lock_path(resolved_root, instance=instance)
-    return raw_manifest, resolved_root, instance, state_path, lock_path
+    return (
+        raw_manifest,
+        resolved_root,
+        instance,
+        _state_path(resolved_root, instance=instance),
+        _lock_path(resolved_root, instance=instance),
+    )

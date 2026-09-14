@@ -35,3 +35,6 @@ extend_exclude = ["scripts"]
 
 [tool.pylint.format]
 max-module-lines = 150
+
+[tool.pylint.design]
+max-nested-blocks = 2

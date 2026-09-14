@@ -41,14 +41,18 @@ def _dispatch_command(cmd: str, args: argparse.Namespace) -> int:
     return action() if action else const.EXIT_OK
 
 
+def _print_rig_error(exc: RigError) -> None:
+    print(f"rig: error [{exc.code}]: {exc.message}", file=sys.stderr)
+    if exc.hint:
+        print(f"  hint: {exc.hint}", file=sys.stderr)
+
+
 def _handle_exception(exc: Exception, cmd: str, as_json: bool) -> int:
     if isinstance(exc, RigError):
         if as_json:
             print_json_error(exc, command=cmd)
         else:
-            print(f"rig: error [{exc.code}]: {exc.message}", file=sys.stderr)
-            if exc.hint:
-                print(f"  hint: {exc.hint}", file=sys.stderr)
+            _print_rig_error(exc)
         return exc.exit_code
     if isinstance(exc, TimeoutError):
         err = RigError(str(exc), code="E_LOCK_TIMEOUT", exit_code=const.EXIT_MUTEX_CONFLICT)

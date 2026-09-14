@@ -30,17 +30,21 @@ _ABORT_EXCEPTIONS = (
 )
 
 
+def _stop_one_service_for_switch(sname: str, rec: dict[str, Any], root: Path) -> None:
+    outcome = _stop_record(rec, root)
+    if outcome not in ("terminated", "killed", "stale"):
+        raise RigError(
+            f"service {sname!r} failed to stop during mode switch ({outcome})",
+            code="E_SWITCH_FAILED",
+            exit_code=EXIT_REFUSED,
+        )
+
+
 def _stop_services_for_switch(state: dict[str, Any], root: Path) -> None:
     for sname in reverse_dependency_order(state.get("services", {})):
         rec = state["services"].get(sname)
         if rec:
-            outcome = _stop_record(rec, root)
-            if outcome not in ("terminated", "killed", "stale"):
-                raise RigError(
-                    f"service {sname!r} failed to stop during mode switch ({outcome})",
-                    code="E_SWITCH_FAILED",
-                    exit_code=EXIT_REFUSED,
-                )
+            _stop_one_service_for_switch(sname, rec, root)
             state["services"].pop(sname, None)
 
 
@@ -67,11 +71,9 @@ def _switch_mode(
 
 def _reclaim_dead_service(name: str, root: Path, state_ctx: tuple[dict[str, Any], Path]) -> bool:
     state, state_path = state_ctx
-    existing = state["services"].get(name)
-    if not existing:
+    if not (existing := state["services"].get(name)):
         return True
-    outcome = _stop_record(existing, root, remove=True)
-    if outcome not in ("terminated", "killed", "stale"):
+    if _stop_record(existing, root, remove=True) not in ("terminated", "killed", "stale"):
         return False
     state["services"].pop(name, None)
     write_state(state_path, state)
@@ -107,11 +109,20 @@ def _handle_step_failure(name: str, exc: Exception, as_json: bool) -> int:
         if isinstance(exc, RigError):
             raise exc
         raise RigError(
-            f"failed to start {name}: {exc}",
-            code="E_START_FAILED",
-            exit_code=EXIT_OP_FAILED,
+            f"failed to start {name}: {exc}", code="E_START_FAILED", exit_code=EXIT_OP_FAILED
         ) from None
     return exc.exit_code if isinstance(exc, RigError) else EXIT_OP_FAILED
+
+
+def _handle_timeout(name: str, as_json: bool) -> int:
+    timeout_err = RigError(
+        f"service {name!r} failed to reach healthy state",
+        code="E_START_TIMEOUT",
+        exit_code=EXIT_OP_FAILED,
+    )
+    if as_json:
+        raise timeout_err
+    return timeout_err.exit_code
 
 
 def _start_loop(
@@ -131,13 +142,6 @@ def _start_loop(
             return _handle_step_failure(name, err, as_json)
         if rec is None:
             rollback_started(started, RollbackContext(state, state_path, root, manifest))
-            timeout_err = RigError(
-                f"service {name!r} failed to reach healthy state",
-                code="E_START_TIMEOUT",
-                exit_code=EXIT_OP_FAILED,
-            )
-            if as_json:
-                raise timeout_err
-            return timeout_err.exit_code
+            return _handle_timeout(name, as_json)
         started.append(name)
     return None

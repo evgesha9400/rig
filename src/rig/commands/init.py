@@ -27,22 +27,26 @@ DEFAULT_COMPOSE_SERVICES = {
 }
 
 
+def _add_compose_service(base: dict[str, Any], detected: str, item: tuple[str, Any]) -> None:
+    svc, blk = item
+    if (kind := classify_compose_service(svc, blk)) and kind not in base:
+        port, desc = DEFAULT_COMPOSE_SERVICES[kind]
+        base[kind] = {
+            "type": "compose",
+            "compose_file": detected,
+            "compose_service": svc,
+            "compose_port": port,
+            "description": desc,
+        }
+
+
 def _detect_compose(root: Path, base_services: dict[str, Any]) -> str | None:
-    cands = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
+    cands = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
     if not (detected := next((c for c in cands if (root / c).is_file()), None)):
         return None
     try:
-        for svc, blk in _extract_compose_services((root / detected).read_text()).items():
-            kind = classify_compose_service(svc, blk)
-            if kind and kind not in base_services:
-                port, desc = DEFAULT_COMPOSE_SERVICES[kind]
-                base_services[kind] = {
-                    "type": "compose",
-                    "compose_file": detected,
-                    "compose_service": svc,
-                    "compose_port": port,
-                    "description": desc,
-                }
+        for item in _extract_compose_services((root / detected).read_text()).items():
+            _add_compose_service(base_services, detected, item)
     except OSError:
         pass
     return detected
@@ -74,8 +78,7 @@ def _write_manifest_file(target: Path, content: str, opts: tuple[bool, Path]) ->
         return
     try:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(str(target), flags, 0o644)
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(os.open(str(target), flags, 0o644), "w") as f:
             f.write(content)
     except FileExistsError:
         msg = f"'{target}' already exists. Pass --force to overwrite."
@@ -105,8 +108,7 @@ def _build_init_manifest(root: Path) -> dict[str, Any]:
     if base_services:
         data["services"] = base_services
     if native_services:
-        data["default_mode"] = "native"
-        data["modes"] = {"native": {"services": native_services}}
+        data["default_mode"], data["modes"] = "native", {"native": {"services": native_services}}
     return data
 
 
@@ -129,7 +131,7 @@ def cmd_init(root: Path, *args: Any, **kwargs: Any) -> int:
     dry_run, force, up, as_json = _unpack_init_flags(args, kwargs)
     resolved_root = Path(root).resolve()
     target = resolved_root / "rig.json"
-    if (target.is_symlink() or target.exists()) and not force and not dry_run:
+    if (target.is_symlink() or target.exists()) and not (force or dry_run):
         msg = f"'{target}' already exists. Pass --force to overwrite."
         hint = "pass --force to overwrite the existing manifest"
         raise RigError(msg, code="E_USAGE", exit_code=EXIT_USAGE, hint=hint)

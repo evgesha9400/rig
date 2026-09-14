@@ -1,10 +1,16 @@
 .DEFAULT_GOAL := help
-.PHONY: test check-quality help
+.PHONY: test check-quality install-hooks help
 
 help:
 	@echo "rig commands:"
 	@echo "  make test           - Run test suite"
 	@echo "  make check-quality  - Run all quality gates in series"
+	@echo "  make install-hooks  - Configure git pre-commit hook"
+
+install-hooks:
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/pre-commit
+	@echo "✅ Pre-commit hook configured via core.hooksPath=.githooks"
 
 test:
 	uv run pytest tests/

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+echo "Running code quality gates pre-commit hook..."
+make check-quality

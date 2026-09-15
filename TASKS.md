@@ -46,7 +46,7 @@ Design and implement a native log inspection and streaming mechanism allowing de
 
 ---
 
-## Task 2: Formatted Terminal Representation for Status and Command Output
+## Task 2: Formatted Terminal Representation for Status and Command Output [Completed]
 
 ### Objective
 Design and implement a visually clear, formatted terminal interface for `rig status`, `rig ps`, and lifecycle command outputs (`rig up`, `rig down`, `rig check`) while strictly preserving standard library zero-dependency constraints and JSON envelope compatibility.
@@ -93,11 +93,11 @@ Design and implement a visually clear, formatted terminal interface for `rig sta
    - Abide by the 150-line file limit per module.
 
 ### Implementation Scope
-- [ ] Create ANSI color and box-drawing utilities in `src/rig/core/terminal.py`.
-- [ ] Refactor `_print_status` in `src/rig/commands/status.py` to use structured table formatting.
-- [ ] Refactor `_print_table` in `src/rig/commands/ps.py` with enhanced badges and alignment.
-- [ ] Upgrade lifecycle feedback in `src/rig/commands/up/runner.py` and `src/rig/commands/down/runner.py`.
-- [ ] Add tests verifying:
-  - ANSI code emission on TTY.
-  - Clean plain-text fallback on non-TTY / `NO_COLOR=1`.
-  - JSON output untouched by formatting changes (`--json`).
+- [x] Create ANSI color and box-drawing utilities in `src/rig/core/terminal.py`.
+- [x] Refactor `_print_status` in `src/rig/commands/status.py` to use structured table formatting.
+- [x] Refactor `_print_table` in `src/rig/commands/ps.py` with enhanced badges and alignment.
+- [x] Upgrade lifecycle feedback in `src/rig/commands/up/runner.py` and `src/rig/commands/down/runner.py`.
+- [x] Add tests verifying:
+  - [x] ANSI code emission on TTY.
+  - [x] Clean plain-text fallback on non-TTY / `NO_COLOR=1`.
+  - [x] JSON output untouched by formatting changes (`--json`).

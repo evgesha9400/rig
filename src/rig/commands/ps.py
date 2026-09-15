@@ -10,6 +10,7 @@ from rig.core.constants import EXIT_OK, LOCK_FILE_NAME, STATE_FILE_NAME
 from rig.core.errors import print_json_envelope
 from rig.core.identity import get_instances_dir, is_locked
 from rig.core.state import read_state
+from rig.core.terminal import format_table, get_theme
 from rig.net.health import wait_for_http
 from rig.proc.process import identity_matches, pid_alive
 
@@ -88,19 +89,35 @@ def _summarize_instance(inst_dir: Path, health: bool) -> dict[str, Any] | None:
     }
 
 
+def _format_ps_row(it: dict[str, Any], th: Any) -> list[str]:
+    st_badges = {
+        "running": f"{th.green}● running{th.r}",
+        "partial": f"{th.yellow}▲ partial{th.r}",
+        "stopped": f"{th.red}○ stopped{th.r}",
+        "orphaned": f"{th.magenta}✖ orphaned{th.r}",
+    }
+    st = st_badges.get(it["status"], it["status"])
+    summary = ", ".join(f"{s}:{info['status']}" for s, info in it["services"].items()) or "none"
+    if len(summary) > SUMMARY_MAX_LENGTH:
+        summary = f"{it['services_running']}/{it['services_total']} up"
+    root_display = (it["root"] or "n/a") + ("" if it["root_exists"] else " [deleted]")
+    return [
+        f"{th.b}{it['project']}{th.r}",
+        f"{th.d}{it['instance']}{th.r}",
+        f"{th.cyan}{it['mode']}{th.r}",
+        st,
+        summary,
+        f"{th.d}{root_display}{th.r}",
+    ]
+
+
 def _print_table(instances: list[dict[str, Any]]) -> None:
-    col1 = f"{'PROJECT':<16} {'INSTANCE':<22} {'MODE':<10}"
-    print(f"{col1} {'STATUS':<10} {'SERVICES':<25} {'ROOT'}")
-    for it in instances:
-        summary = ", ".join(f"{s}:{info['status']}" for s, info in it["services"].items()) or "none"
-        if len(summary) > SUMMARY_MAX_LENGTH:
-            summary = f"{it['services_running']}/{it['services_total']} up"
-        root_display = (it["root"] or "n/a") + ("" if it["root_exists"] else " [deleted]")
-        line = (
-            f"{it['project']:<16} {it['instance']:<22} {it['mode']:<10} "
-            f"{it['status']:<10} {summary:<25} {root_display}"
-        )
-        print(line)
+    th = get_theme()
+    headers = ["PROJECT", "INSTANCE", "MODE", "STATUS", "SERVICES", "ROOT"]
+    rows = [_format_ps_row(it, th) for it in instances]
+    for line in format_table(headers, rows, gutter=4):
+        print(f"  {line}")
+    print()
 
 
 def _collect_instances(instances_dir: Path, health: bool) -> list[dict[str, Any]]:

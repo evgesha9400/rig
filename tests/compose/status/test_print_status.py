@@ -44,7 +44,7 @@ def _status_line(capsys, name: str) -> str:
     return next(
         line
         for line in capsys.readouterr().out.splitlines()
-        if line.strip().startswith(f"{name} ") or line.strip().startswith(f"{name}:")
+        if f" {name} " in f" {line} " and not line.strip().startswith("STATUS")
     )
 
 
@@ -79,7 +79,7 @@ def test_status_reports_a_running_compose_container_as_running(monkeypatch, tmp_
     _print_compose_status(monkeypatch, tmp_path, "running")
     line = _status_line(capsys, "db")
     assert "running" in line
-    assert "container=abc123" in line
+    assert "container:abc123" in line
 
 
 def test_status_reports_a_stopped_compose_container_as_stopped(monkeypatch, tmp_path, capsys):
@@ -113,3 +113,35 @@ def test_status_skips_the_health_probe_of_a_stopped_service(monkeypatch, tmp_pat
     out = capsys.readouterr().out
     assert "stopped" in out
     assert "healthy" not in out
+
+
+def test_status_prints_degraded_log_link(monkeypatch, tmp_path, capsys):
+    """Degraded service prints contextual log link below status table."""
+    monkeypatch.setattr(stack, "wait_for_http", lambda *a, **k: False)
+    monkeypatch.setattr(stack, "identity_matches", lambda record: True)
+    monkeypatch.setattr(stack, "pid_alive", lambda pid: True)
+    service = stack.Service(name="api", type="port", command=["echo"], healthcheck_path="/health")
+    state = {
+        "instance": "inst-test",
+        "services": {
+            "api": {
+                "name": "api",
+                "type": "port",
+                "pid": 1234,
+                "port": 8000,
+                "url": "http://127.0.0.1:8000",
+            }
+        },
+    }
+    monkeypatch.setattr(stack, "get_instances_dir", lambda: tmp_path / "instances")
+    manifest = stack.Manifest(
+        project="test",
+        services={"api": service},
+        scopes={"full": ["api"]},
+        path=tmp_path / "rig.json",
+    )
+    stack._print_status(manifest, state, tmp_path)
+    out = capsys.readouterr().out
+    assert "▲ degraded" in out
+    assert "▲ 1 service degraded. View logs:" in out
+    assert str(tmp_path / "instances" / "inst-test" / "logs" / "api.log") in out

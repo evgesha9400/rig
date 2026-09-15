@@ -18,7 +18,7 @@ def _status_line(capsys, name: str) -> str:
     return next(
         line
         for line in capsys.readouterr().out.splitlines()
-        if line.strip().startswith(f"{name} ") or line.strip().startswith(f"{name}:")
+        if f" {name} " in f" {line} " and not line.strip().startswith("STATUS")
     )
 
 
@@ -66,4 +66,4 @@ def test_status_reports_a_live_process_service_as_running(monkeypatch, tmp_path,
 
     line = _status_line(capsys, "api")
     assert "running" in line
-    assert "pid=4242" in line
+    assert "pid:4242" in line

@@ -11,6 +11,7 @@ from typing import Any
 from rig.core.constants import EXIT_OK, EXIT_USAGE
 from rig.core.env import render
 from rig.core.errors import RigError, print_json_envelope
+from rig.core.terminal import get_theme
 from rig.manifest.inspect import _resolve_executable
 from rig.manifest.loader import load_manifest
 
@@ -51,8 +52,8 @@ def _check_compose_service(svc: Any, info: tuple[Path, str], issues: list[dict[s
     if not shutil.which("docker"):
         msg = "'docker' not found on PATH"
         issues.append({"level": "error", "check": f"{tag}:docker", "message": msg})
-    if svc.compose_file and not (root / svc.compose_file).is_file():
-        msg = f"compose file '{svc.compose_file}' does not exist"
+    if svc.compose_file and not (p := (root / svc.compose_file).resolve()).is_file():
+        msg = f"compose file '{p}' does not exist"
         issues.append({"level": "error", "check": f"{tag}:compose_file", "message": msg})
 
 
@@ -61,7 +62,7 @@ def _check_service(svc: Any, root: Path, ctx: tuple[str, str, list[dict[str, Any
     cwd = (root / svc.cwd).resolve()
     tag = f"{mode_tag} service:{sname}".strip()
     if not cwd.is_dir():
-        msg = f"working directory '{svc.cwd}' does not exist"
+        msg = f"working directory '{cwd}' does not exist"
         issues.append({"level": "error", "check": f"{tag}:cwd", "message": msg})
     if svc.type in ("fd", "port"):
         _check_proc_service(svc, (root, cwd, tag), issues)
@@ -93,11 +94,13 @@ def _report_check_results(
         data = {"ok": not has_errors, "project": manifest.project, "issues": issues}
         print_json_envelope("check", data)
         return EXIT_USAGE if has_errors else EXIT_OK
+    th = get_theme()
     for i in issues:
-        prefix = "FAIL" if i["level"] == "error" else "WARN"
+        prefix = f"{th.red}✖ FAIL{th.r}" if i["level"] == "error" else f"{th.yellow}▲ WARN{th.r}"
         print(f"{prefix} {i['check']}: {i['message']}", file=sys.stderr)
     if not issues:
-        print(f"OK check passed: manifest '{manifest_path}' is valid for {mode_count} mode(s).")
+        msg = f"manifest '{manifest_path}' is valid for {mode_count} mode(s)."
+        print(f"{th.green}✓ OK{th.r} check passed: {msg}")
     return EXIT_USAGE if has_errors else EXIT_OK
 
 

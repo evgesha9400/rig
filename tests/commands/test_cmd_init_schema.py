@@ -9,7 +9,7 @@ from rig import cli as rig
 stack = rig
 
 
-def test_cmd_check(tmp_path):
+def test_cmd_check(tmp_path, capsys):
     manifest_path = tmp_path / "rig.json"
     manifest_path.write_text(
         json.dumps(
@@ -36,6 +36,8 @@ def test_cmd_check(tmp_path):
     )
     ret_fail = stack.cmd_check(tmp_path, bad_manifest)
     assert ret_fail == stack.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert str((tmp_path / "nonexistent_dir").resolve()) in err
 
 
 def test_cmd_init_fastapi_and_package_json(tmp_path):

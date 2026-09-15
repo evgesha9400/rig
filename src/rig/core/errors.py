@@ -17,10 +17,28 @@ class RigError(RuntimeError):
         self.code: str = str(kwargs.get("code", "E_GENERIC"))
         self.exit_code: int = int(kwargs.get("exit_code", EXIT_OP_FAILED))
         self.hint: str | None = kwargs.get("hint")
+        self.headline: str | None = kwargs.get("headline")
+        self.context: str | None = kwargs.get("context")
         self.details: dict[str, Any] = kwargs.get("details") or {}
 
 
 StackError = RigError
+
+
+def format_human_error(exc: RigError, th: Any) -> str:
+    """Format a RigError into a high-signal human structured error card."""
+    headline = exc.headline or exc.message
+    lines = [f"  {th.red}✖ {headline}{th.r}"]
+    if exc.context:
+        for cl in exc.context.splitlines():
+            lines.append(f"    {th.d}{cl}{th.r}")
+    elif exc.headline and exc.headline != exc.message:
+        lines.append(f"    {th.d}{exc.message}{th.r}")
+    if exc.hint:
+        lines.append(f"    {th.cyan}Hint:{th.r} {exc.hint}  {th.d}[{exc.code}]{th.r}")
+    else:
+        lines.append(f"    {th.d}[{exc.code}]{th.r}")
+    return "\n".join(lines) + "\n"
 
 
 def manifest_error(message: str, *, hint: str | None = None) -> RigError:

@@ -20,6 +20,7 @@ _SUBMODULES = (
     "rig.core.locks",
     "rig.core.state",
     "rig.core.env",
+    "rig.core.terminal",
     "rig.net.ports",
     "rig.net.probe",
     "rig.net.health",

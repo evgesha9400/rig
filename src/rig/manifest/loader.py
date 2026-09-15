@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from rig.core.constants import EXIT_USAGE
 from rig.core.errors import RigError, manifest_error
 from rig.manifest.models import Manifest, Service
 from rig.manifest.parser import _parse_service, _validate_service_integrity
@@ -15,7 +16,14 @@ def _load_raw_json(path: Path) -> dict[str, Any]:
     try:
         raw = json.loads(Path(path).read_text())
     except OSError:
-        raise RigError(f"manifest not found: {path}") from None
+        raise RigError(
+            f"manifest not found: {path}",
+            code="E_USAGE",
+            exit_code=EXIT_USAGE,
+            headline="No manifest found in this directory",
+            context=f"rig looked for 'rig.json' or 'stack.json' at:\n{path}",
+            hint="Run 'rig init' to scaffold a new manifest, or pass '--manifest <path>'",
+        ) from None
     except json.JSONDecodeError as exc:
         raise manifest_error(f"manifest {path} is not valid JSON: {exc}") from None
     if not isinstance(raw, dict):
@@ -49,14 +57,8 @@ def _register_service_aliases(
         if not isinstance(alias, str) or not alias:
             raise manifest_error(f"service {sname!r} has invalid alias {alias!r}")
         if alias in services and alias != sname:
-            msg = f"alias {alias!r} for service {sname!r} conflicts with another service"
-            raise manifest_error(msg)
+            raise manifest_error(f"alias {alias!r} for service {sname!r} conflicts with another")
         derived[alias] = [sname]
-
-
-def _add_service_aliases(derived: dict[str, list[str]], services: dict[str, Service]) -> None:
-    for item in services.items():
-        _register_service_aliases(item, services, derived)
 
 
 def _validate_scope_members(scope: str, members: list[str], known: set[str]) -> None:
@@ -83,14 +85,12 @@ def _parse_explicit_scopes(
 
 
 def _derive_scopes(
-    initial_services: dict[str, Service], scopes_raw: Any
+    services: dict[str, Service], raw: Any
 ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    derived: dict[str, list[str]] = {
-        "full": list(initial_services),
-        "local": list(initial_services),
-    }
-    _add_service_aliases(derived, initial_services)
-    explicit = _parse_explicit_scopes(scopes_raw, initial_services)
+    derived: dict[str, list[str]] = {"full": list(services), "local": list(services)}
+    for item in services.items():
+        _register_service_aliases(item, services, derived)
+    explicit = _parse_explicit_scopes(raw, services)
     derived.update(explicit)
     return derived, explicit
 

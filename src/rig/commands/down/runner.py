@@ -14,9 +14,10 @@ from rig.commands.common import (
     reverse_dependency_order,
 )
 from rig.core.constants import EXIT_OK, EXIT_OP_FAILED, EXIT_REFUSED
-from rig.core.errors import RigError, print_json_envelope
+from rig.core.errors import RigError, format_human_error, print_json_envelope
 from rig.core.locks import exclusive_lock
 from rig.core.state import read_state, write_state
+from rig.core.terminal import get_theme
 from rig.net.ports import wait_for_port_release
 
 
@@ -90,13 +91,32 @@ def _teardown_scope(
 
 
 def _handle_blocked(blocked: list[str], as_json: bool) -> int:
+    msg = "; ".join(blocked)
+    hint = "stop dependent first or use --scope full"
     if as_json:
-        msg = "; ".join(blocked)
-        hint = "stop dependent first or use --scope full"
         raise RigError(msg, code="E_REFUSED", exit_code=EXIT_REFUSED, hint=hint)
-    for m in blocked:
-        print(f"  refused: {m}", file=sys.stderr)
+    err = RigError(
+        msg,
+        code="E_REFUSED",
+        exit_code=EXIT_REFUSED,
+        headline="Cannot stop service because other active services depend on it",
+        context="\n".join(f"Blocked: {b}" for b in blocked),
+        hint="Stop dependents first, or run 'rig down --scope full'",
+    )
+    th = get_theme()
+    print(format_human_error(err, th), end="", file=sys.stderr)
     return EXIT_REFUSED
+
+
+def _finish_down_output(info: tuple[str, str, list[str], list[str]], as_json: bool) -> int:
+    inst, proj, stopped, failures = info
+    if as_json:
+        data = {"instance": inst, "project": proj, "stopped": stopped, "failures": failures}
+        print_json_envelope("down", data, ok=not failures)
+    elif stopped:
+        th = get_theme()
+        print(f"\n  {th.green}✓ Stack stopped.{th.r} Stopped {len(stopped)} service(s).\n")
+    return EXIT_OP_FAILED if failures else EXIT_OK
 
 
 def down_checkout(root: Path, manifest_path: Path, *args: Any, **kwargs: Any) -> int:
@@ -113,12 +133,4 @@ def down_checkout(root: Path, manifest_path: Path, *args: Any, **kwargs: Any) ->
         stopped, failures = _teardown_targets(targets, state, (manifest, root_path, state_path))
         state["generation"] = int(state.get("generation", 0)) + 1
         write_state(state_path, state)
-    if as_json:
-        data = {
-            "instance": inst,
-            "project": manifest.project,
-            "stopped": stopped,
-            "failures": failures,
-        }
-        print_json_envelope("down", data, ok=not failures)
-    return EXIT_OP_FAILED if failures else EXIT_OK
+    return _finish_down_output((inst, manifest.project, stopped, failures), as_json)

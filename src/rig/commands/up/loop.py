@@ -57,11 +57,15 @@ def _switch_mode(
     active = sum(1 for rec in services if is_service_active_in_mode(rec, root))
     if current_mode and current_mode != mode and active > 0:
         if not switch:
+            head = f"Stack is currently running in {current_mode!r} mode"
+            hint = f"Re-run with 'rig up --switch --mode {mode}' to stop {current_mode!r} first"
+            msg = f"stack in {current_mode!r}; cannot start in {mode!r} without --switch"
             raise RigError(
-                f"stack running in mode {current_mode!r}; "
-                f"cannot start in {mode!r} without --switch",
+                msg,
                 code="E_MODE_CONFLICT",
                 exit_code=EXIT_MUTEX_CONFLICT,
+                headline=head,
+                hint=hint,
             )
         _stop_services_for_switch(state, root)
         write_state(state_path, state)

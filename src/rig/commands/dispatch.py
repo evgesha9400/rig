@@ -8,8 +8,9 @@ from pathlib import Path
 
 from rig import commands
 from rig.core import constants
-from rig.core.errors import RigError, print_json_error
+from rig.core.errors import RigError, format_human_error, print_json_error
 from rig.core.identity import find_default_manifest, find_project_root
+from rig.core.terminal import get_theme
 
 
 def _dispatch_command(cmd: str, args: argparse.Namespace) -> int:
@@ -42,9 +43,8 @@ def _dispatch_command(cmd: str, args: argparse.Namespace) -> int:
 
 
 def _print_rig_error(exc: RigError) -> None:
-    print(f"rig: error [{exc.code}]: {exc.message}", file=sys.stderr)
-    if exc.hint:
-        print(f"  hint: {exc.hint}", file=sys.stderr)
+    th = get_theme()
+    print(format_human_error(exc, th), end="", file=sys.stderr)
 
 
 def _handle_exception(exc: Exception, cmd: str, as_json: bool) -> int:

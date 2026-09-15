@@ -93,11 +93,23 @@ def _find_target(target: str) -> Path:
     matched = _find_matching_instances(get_instances_dir(), target)
     if not matched:
         msg = f"no instance found matching {target!r}"
-        raise RigError(msg, code="E_NOT_FOUND", exit_code=EXIT_NOT_FOUND)
+        head = f"No active or recorded instance matches {target!r}"
+        hint = "Check running instances with 'rig ps'"
+        raise RigError(msg, code="E_NOT_FOUND", exit_code=EXIT_NOT_FOUND, headline=head, hint=hint)
     if len(matched) > 1:
         names = ", ".join(d.name for d in matched)
         msg = f"ambiguous target {target!r}; matches: {names}"
-        raise RigError(msg, code="E_AMBIGUOUS", exit_code=EXIT_NOT_FOUND)
+        head = f"Multiple instances match {target!r}"
+        ctx = f"Matching instances:\n{names}"
+        hint = "Specify the full instance identifier (e.g. from 'rig ps')"
+        raise RigError(
+            msg,
+            code="E_AMBIGUOUS",
+            exit_code=EXIT_NOT_FOUND,
+            headline=head,
+            context=ctx,
+            hint=hint,
+        )
     return matched[0]
 
 

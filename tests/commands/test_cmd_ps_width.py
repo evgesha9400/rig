@@ -54,7 +54,7 @@ def test_cmd_ps_truncates_in_narrow_terminal(monkeypatch, tmp_path, capsys):
     # Header and divider + 1 row
     assert len(lines) >= 3
     for line in lines:
-        assert len(line) <= 80
+        assert len(stack.strip_ansi(line)) <= 80
     assert "…" in table_out
     assert "e9297fec" in table_out
     assert "longproject-e9297fec" not in table_out

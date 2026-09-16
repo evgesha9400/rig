@@ -27,9 +27,12 @@ Modern multi-service local development often suffers from:
 
 ## Installation
 
+> [!NOTE]
+> The PyPI distribution package is named **`rig-cli`** (the short name `rig` belongs to an unrelated legacy library). Once installed, both `rig` and `rig-cli` commands are available on your `$PATH`.
+
 ### Install as a Standalone Global Tool from PyPI (Recommended)
 
-Using `pipx`:
+Using `pipx` (standard for Python CLI applications):
 ```bash
 pipx install rig-cli
 ```
@@ -39,12 +42,10 @@ Using `uv`:
 uv tool install rig-cli
 ```
 
-Using standard `pip`:
+Using standard `pip` (on systems without PEP 668 environment restrictions):
 ```bash
 pip install --user rig-cli
 ```
-
-Both `rig` and `rig-cli` commands are automatically available on your `$PATH`.
 
 ### Install from Git
 

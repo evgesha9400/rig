@@ -34,6 +34,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --dev
 
+      - name: Verify release tag matches pyproject.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          version="$(uv run python -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [[ "$tag" != "$version" ]]; then
+            echo "::error::Tag v$tag does not match pyproject.toml version $version"
+            exit 1
+          fi
+
       - name: Run quality checks and tests
         run: make check-quality
 
@@ -57,6 +67,7 @@ jobs:
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist/
+          skip-existing: true
 
   release:
     name: Create GitHub Release

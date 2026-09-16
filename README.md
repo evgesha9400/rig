@@ -1,107 +1,94 @@
 # rig
 
-A zero-dependency, zero-daemon developer environment supervisor and process runner for multi-service repositories. Featuring machine-wide supervision, dynamic port allocation, zero-race socket inheritance, multi-stack modes (`native`, `container`), and verified lifecycle management.
+<p align="center">
+  <strong>Zero-dependency, zero-daemon developer environment supervisor and process runner for multi-service repositories.</strong>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/rig-cli/"><img src="https://img.shields.io/pypi/v/rig-cli.svg?color=007ec6" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/rig-cli/"><img src="https://img.shields.io/pypi/pyversions/rig-cli.svg" alt="Python Versions"></a>
+  <a href="https://github.com/evgesha9400/rig/actions/workflows/publish.yml"><img src="https://github.com/evgesha9400/rig/actions/workflows/publish.yml/badge.svg" alt="CI Status"></a>
+  <a href="https://github.com/evgesha9400/rig/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="#zero-runtime-dependencies"><img src="https://img.shields.io/badge/dependencies-0-brightgreen.svg" alt="Zero Dependencies"></a>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/rig-cli/">PyPI Package</a> •
+  <a href="#the-3-step-fast-track">Quick Start</a> •
+  <a href="#feature-comparison">Comparison</a> •
+  <a href="#zero-race-socket-inheritance-type-fd">Socket Inheritance</a> •
+  <a href="#machine-wide-supervision-rig-ps">Machine Supervision</a> •
+  <a href="#ai-agent--automation-protocol">AI Agent Protocol</a> •
+  <a href="#cli-command-reference">CLI Reference</a>
+</p>
 
 ---
 
-## Why `rig`?
+## The Acute Friction
 
-Modern multi-service local development often suffers from:
-- **Port collisions**: Multiple developers or multiple checkouts of the same repo colliding on static ports like `3000` or `8000`.
-- **Zombie processes**: Dev servers left orphaned after an interrupted test run, keeping ports bound and blocking subsequent runs.
-- **Race conditions on port binding**: Allocating an ephemeral port, closing the probe socket, and having another process grab it before the service can bind.
-- **Hidden global state**: No way to see what services or test instances are running across all checkouts on your machine.
-- **Heavy or brittle supervisors**: Requiring background daemons (systemd/dockerd/supervisord) or complex Node/Ruby process supervisors just to launch a Python API and a frontend dev server.
+Local multi-service development across multiple git branches and checkouts is routinely broken by five recurring headaches:
 
-`rig` solves this with:
-1. **Zero External Runtime Dependencies**: Standard library Python 3.10+ only (`socket`, `subprocess`, `os`, `signal`, `json`, `fcntl`, `shlex`, `dataclasses`, `pathlib`).
-2. **Zero Persistent Daemons**: Fully file-backed atomic registry (`~/.local/state/rig/instances/`) and non-blocking file locks (`flock`). Fast, crash-resilient, and stateless.
-3. **Machine-Wide Supervision**: Inspect all active projects across your machine (`rig ps`), stop any named project (`rig down <project>`), or tear down all active instances at once (`rig down --all`).
-4. **Multi-Stack Modes (`native` vs `container`)**: Define base services and mode overlays in a single `rig.json`. Switch modes cleanly with mutex collision protection (`rig up --mode container --switch`).
-5. **Zero-Race Socket Inheritance (`type: "fd"`)**: Binds listening sockets on kernel port `0`, holds them open, and passes the descriptors directly into child processes (`--fd {fd}`). The port is never released between allocation and service start.
-6. **Human-Friendly & Sticky Ports**: Allocates clean, typing-friendly ports (`3000` for frontend, `8000` for backend) by default, supports explicit `preferred_port` in `rig.json`, and maintains sticky port leases in instance state across restarts.
-7. **One-Command Setup**: `rig init [--up]` automatically scans your repository for Docker Compose, FastAPI, Flask, Django, Vite, or Next.js and generates a validated `rig.json`.
-8. **AI-Friendly Protocol**: Universal `--json` output envelope (`ok`, `schema`, `data`/`error`) and deterministic exit codes (`0` to `6`, `130`) designed for autonomous agents and CLI automation.
+| Problem | Traditional Workaround | The `rig` Solution |
+|---|---|---|
+| **Port Collisions** | `lsof -i :3000` & `kill -9` | **Dynamic & Sticky Port Leasing**: Auto-assigns friendly ports (`3000`, `8000`), increments on collision, and remembers ports across restarts. |
+| **Port Binding Race Conditions** | Probe port, close socket, hope child binds before another process grabs it | **Zero-Race Socket Inheritance (`type: "fd"`)**: Binds kernel port `0`, holds the socket open, and passes descriptor directly to child processes (`--fd {fd}`). |
+| **Orphaned Zombie Processes** | `killall node` / `pkill python` | **Atomic File-Backed Registry**: Tracks PID and PGID per instance in `~/.local/state/rig/`. Cleans up orphaned services even if the directory was deleted (`rm -rf`). |
+| **Heavy Supervisor Daemons** | Docker Compose for everything, systemd, supervisord, Procfile wrappers | **Zero Runtime Dependencies & Zero Daemons**: Standard library Python 3.10+ only. Starts instantaneously, uses kernel `flock` locks, and exits cleanly. |
+| **Invisible Machine State** | No single view of what processes or checkouts are running | **Machine-Wide Visibility**: Run `rig ps` from anywhere to inspect all active checkouts, their allocated ports, health, and status across your entire machine. |
 
 ---
 
-## Installation
+## Feature Comparison
 
-> [!NOTE]
-> The PyPI distribution package is named **`rig-cli`** (the short name `rig` belongs to an unrelated legacy library). Once installed, both `rig` and `rig-cli` commands are available on your `$PATH`.
+How `rig` compares against standard development orchestrators:
 
-### Install as a Standalone Global Tool from PyPI (Recommended)
+| Capability | `rig` | Docker Compose | Foreman / Overmind | systemd / supervisord |
+|---|:---:|:---:|:---:|:---:|
+| **Zero Third-Party Dependencies** | ✅ (Standard Library) | ❌ (Docker Engine) | ❌ (Ruby/Go toolchains) | ❌ (System-level packages) |
+| **Zero Background Daemons** | ✅ (File-mutex lock) | ❌ (Requires `dockerd`) | ❌ (Requires background tmux/daemon) | ❌ (Requires system daemon) |
+| **Dynamic & Sticky Port Allocation** | ✅ Built-in | ❌ Manual config | ❌ Hardcoded ports | ❌ Hardcoded ports |
+| **Zero-Race Socket Inheritance (`type: "fd"`)** | ✅ Kernel socket pass | ❌ Bridge network NAT | ❌ No | ⚠️ Systemd socket units only |
+| **Machine-Wide Multi-Project View** | ✅ `rig ps` | ⚠️ Per-project compose | ❌ Checkout-isolated only | ⚠️ Global service list |
+| **Cross-Checkout Targeted Teardown** | ✅ `rig down <slug>` | ❌ Must `cd` to folder | ❌ Must `cd` to folder | ⚠️ System unit names |
+| **Typed JSON Envelopes for AI Agents** | ✅ `--json` on every cmd | ⚠️ Untyped CLI json | ❌ Plain text output | ❌ Plain text output |
+| **Deterministic Error Codes** | ✅ Typed error codes | ❌ Generic 0 or 1 | ❌ Generic 0 or 1 | ❌ Generic exit status |
 
-Using `pipx` (standard for Python CLI applications):
+---
+
+## The 3-Step Fast Track
+
+### 1. Install Globally (User Space)
+
+Install `rig-cli` from [PyPI](https://pypi.org/project/rig-cli/) using standard, isolated tool runners:
+
 ```bash
+# Recommended (pipx)
 pipx install rig-cli
-```
 
-Using `uv`:
-```bash
+# Ultra-fast alternative (uv)
 uv tool install rig-cli
 ```
 
-Using standard `pip` (on systems without PEP 668 environment restrictions):
-```bash
-pip install --user rig-cli
-```
+> [!NOTE]
+> The PyPI distribution package is named **`rig-cli`** (the short name `rig` belongs to an unrelated legacy library). Once installed, both `rig` and `rig-cli` commands are available globally on your `$PATH`.
 
-### Install from Git
+### 2. Initialize Any Repository
 
-Using `uv`:
-```bash
-uv tool install --force "git+https://github.com/evgesha9400/rig.git"
-```
-
-Using `pipx` / `pip`:
-```bash
-pip install --user "git+https://github.com/evgesha9400/rig.git"
-```
-
-### Add to a Specific Project
-
-```bash
-uv add "git+https://github.com/evgesha9400/rig.git"
-```
-
-### Direct Drop-in (Zero Installation)
-Since `rig` is a single self-contained module with zero third-party dependencies, you can copy `src/rig/cli.py` directly into any repository (e.g. `scripts/rig.py`):
-```bash
-curl -fsSL https://raw.githubusercontent.com/evgesha9400/rig/main/src/rig/cli.py -o scripts/rig.py
-```
-
----
-
-## Quick Start
-
-### 1. Initialize a Project
-
-Run `rig init` in your repository root. `rig` inspects your files, detects existing backends, frontends, and Docker Compose configurations, and writes a tailored `rig.json`:
+Run `rig init` inside your project root. `rig` inspects your directory, detects Docker Compose, FastAPI, Flask, Django, Vite, or Next.js, and generates a tailored `rig.json`:
 
 ```bash
 rig init
-# Or initialize and start services immediately:
-rig init --up
 ```
 
-You can preview the detected configuration without writing files:
+*Preview detected services without writing to disk:*
 ```bash
 rig init --dry-run
 ```
 
-### 2. Verify Your Environment
-
-Run pre-flight static verification to ensure working directories exist, binaries are executable, Docker Compose files are present, and dependency graphs contain no cycles:
+### 3. Launch and Supervise
 
 ```bash
-rig check
-```
-
-### 3. Start & Supervise Services
-
-```bash
-# Start all services in the active or default mode
+# Start all services in the active mode
 rig up
 
 # Check status of the local checkout
@@ -110,77 +97,94 @@ rig status
 # Inspect service logs
 rig logs backend -n 50
 
-# View all running projects and instances across your machine
-rig ps
-
-# Stop all services in the local checkout
+# Stop services in this checkout
 rig down
 ```
 
 ---
 
-## Global Machine-Wide Supervision
+## Machine-Wide Supervision (`rig ps`)
 
-`rig` maintains a machine-wide state registry under `$XDG_STATE_HOME/rig/instances/` (default: `~/.local/state/rig/instances/`). Every project instance records its directory, PID, PGID, active mode, and allocated ports.
-
-### Inspect All Projects (`rig ps`)
+`rig` maintains a machine-wide state registry under `$XDG_STATE_HOME/rig/instances/` (`~/.local/state/rig/instances/`). Every project instance records its directory, PID, PGID, active mode, and allocated ports.
 
 ```bash
 rig ps
 ```
-Example output:
+
 ```text
 PROJECT         INSTANCE      MODE       STATUS    ACTIVE  PORTS                    ROOT
-deltalytic      68d374ab9c34  native     running   2/2     backend:54123, ui:54124  /Users/alice/projects/deltalytic
-my-api          a1b2c3d4e5f6  container  running   1/1     db:5432                  /Users/alice/work/my-api
+pinpoint-leads  e9297fec      native     running   3/3     postgres:5432, web:3004  /Users/dev/code/pinpoint-leads
+winnow-post     74376561      default    stopped   0/1     -                        /Users/dev/code/winnow-post
+tertia-club     d7bfeefc      native     running   2/2     worker:8004, ui:3003     /Users/dev/code/tertia-club
 ```
 
-`STATUS` reports the instance as a whole: `running` when every recorded service is up, `partial` when only some are, `stopped` when none are, and `orphaned` when the checkout directory no longer exists.
-
-Add `--health` to probe HTTP endpoints for live health checks:
+Add `--health` to probe HTTP endpoints for real-time health checks:
 ```bash
 rig ps --health
 ```
 
-### Targeted Teardown
+### Targeted Teardown & Garbage Collection
 
-Stop a project from anywhere on your machine, even if you are not inside its directory:
+Stop projects from anywhere on your machine, even outside their checkout directory:
 
 ```bash
 # Stop by project name slug
-rig down deltalytic
+rig down pinpoint-leads
 
 # Stop by specific instance ID
-rig down 68d374ab9c34
+rig down e9297fec
 
 # Stop ALL running instances across the entire machine
 rig down --all
-```
 
-`rig` stores process group IDs (`PGID`) and Docker Compose project references in its state registry, allowing it to cleanly terminate orphaned services even if the original working tree was deleted (`rm -rf`).
-
-### Cleanup Stale Instances
-
-```bash
-# Clean up dead instances whose processes are no longer running
+# Clean up stale instance state files
 rig prune
 
-# Force-kill any lingering processes in unmanaged instances and prune
+# Force-kill lingering orphaned processes and prune
 rig prune --force
 ```
 
-`prune` reclaims an instance's recorded state but keeps its `checkout.lock` file,
-so a concurrent `rig` command can never take a lock on a file nobody else can
-see. `prune --force` stops services dependents-first and exits `1` while
-preserving any dependency whose dependent refused to stop.
+---
+
+## Zero-Race Socket Inheritance (`type: "fd"`)
+
+When a service specifies `type: "fd"`, `rig` eliminates the classic time-of-check to time-of-use (TOCTOU) port race:
+
+```
+┌─────────┐      1. socket(AF_INET, SOCK_STREAM)
+│   rig   │ ──── 2. bind("127.0.0.1", 0)  ───► OS Kernel assigns port
+│         │ ──── 3. listen(128)
+└────┬────┘
+     │           4. subprocess.Popen(..., pass_fds=[fd])
+     ▼
+┌─────────┐
+│ Uvicorn │ ──── 5. uvicorn.run(..., fd=sock.fileno())
+└─────────┘      (Socket is NEVER closed between allocation and server startup)
+```
+
+### Python / Uvicorn Example
+
+```python
+import argparse
+import socket
+import uvicorn
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fd", type=int, default=None)
+args, _ = parser.parse_known_args()
+
+if args.fd is not None:
+    sock = socket.fromfd(args.fd, socket.AF_INET, socket.SOCK_STREAM)
+    uvicorn.run("main:app", fd=sock.fileno())
+else:
+    uvicorn.run("main:app", host="127.0.0.1", port=8000)
+```
 
 ---
 
 ## Multi-Stack Modes (`native` vs `container`)
 
-`rig` supports multi-stack modes within a single `rig.json`. For example, you can run database dependencies in containers while developing application code natively, or run the entire stack in containers.
-
-### Example `rig.json` with Modes:
+Define base infrastructure and mode overlays in a single `rig.json`:
 
 ```json
 {
@@ -225,13 +229,6 @@ preserving any dependency whose dependent refused to stop.
           "compose_service": "backend",
           "health": "http://127.0.0.1:8000/healthz",
           "depends_on": ["db"]
-        },
-        "frontend": {
-          "type": "compose",
-          "compose_file": "docker-compose.yml",
-          "compose_service": "frontend",
-          "health": "http://127.0.0.1:3000/",
-          "depends_on": ["backend"]
         }
       }
     }
@@ -239,15 +236,15 @@ preserving any dependency whose dependent refused to stop.
 }
 ```
 
-### Switching Modes Safely
+### Collision-Safe Mode Switching
 
-`rig` prevents accidental multi-mode conflicts. If services are currently running in `native` mode, attempting to start `container` mode without stopping the old services will be safely rejected:
+`rig` prevents conflicting processes from running simultaneously:
 
 ```bash
-# Fails with exit code 3 (E_MODE_CONFLICT) to prevent colliding processes:
+# Blocked with exit code 3 (E_MODE_CONFLICT) to prevent colliding ports/services:
 rig up --mode container
 
-# Cleanly tears down native services first and boots container mode:
+# Cleanly tears down native services first and launches container mode:
 rig up --mode container --switch
 ```
 
@@ -255,32 +252,41 @@ rig up --mode container --switch
 
 ## AI Agent & Automation Protocol
 
-`rig` is designed from the ground up for reliable operation by AI coding assistants, orchestrators, and CI pipelines:
+`rig` is built for autonomous execution by AI agents (Claude Code, AntiGravity, Codex, Cursor) and CI/CD pipelines:
 
-### Universal `--json` Envelope
+### Why AI Coding Assistants Use `rig`
 
-Every command accepts `--json` and emits a predictable schema:
+1. **Deterministic Process Control**: AI agents frequently lose control of background tasks or suffer port collisions when re-running test servers. `rig` manages the full process lifecycle with PID/PGID process groups.
+2. **Predictable JSON Responses**: Agents never have to scrape ANSI text or parse unpredictable terminal formatting.
+3. **Actionable Resolution Hints**: When an error occurs, `rig` returns an exact diagnostic hint for automated recovery.
+
+### Universal `--json` Output Envelope
+
+Every CLI command supports `--json` and emits a typed, deterministic envelope:
 
 ```json
 {
-  "schema": "rig.ps/1",
+  "schema": "rig.status/1",
   "ok": true,
-  "data": [
-    {
-      "project": "my-app",
-      "instance_id": "68d374ab9c34",
-      "mode": "native",
-      "state": "running",
-      "services_count": 2,
-      "services_active": 2,
-      "root": "/path/to/my-app",
-      "ports": {"backend": 54123, "frontend": 54124}
+  "data": {
+    "project": "pinpoint-leads",
+    "instance": "pinpoint-leads-e9297fec",
+    "mode": "native",
+    "generation": 1,
+    "services": {
+      "backend": {
+        "running": true,
+        "type": "fd",
+        "port": 8003,
+        "url": "http://127.0.0.1:8003",
+        "pid": 59608
+      }
     }
-  ]
+  }
 }
 ```
 
-Errors emit structured details with recovery hints:
+Errors provide actionable resolution hints:
 ```json
 {
   "schema": "rig.error/1",
@@ -288,166 +294,91 @@ Errors emit structured details with recovery hints:
   "error": {
     "code": "E_MODE_CONFLICT",
     "message": "Instance is running in mode 'native'; cannot start mode 'container'",
-    "hint": "Pass --switch to stop the active mode first, or run 'rig down' before starting a new mode.",
-    "details": {"active_mode": "native", "requested_mode": "container"}
+    "hint": "Pass --switch to stop the active mode first, or run 'rig down' before starting a new mode."
   }
 }
 ```
 
 ### Deterministic Exit Codes
 
-| Exit Code | Constant | Meaning |
+| Code | Constant | Meaning |
 |---|---|---|
-| `0` | `EXIT_OK` | Command completed successfully. |
-| `1` | `EXIT_OP_FAILED` | Service failed to start, healthcheck timed out, or teardown failed. |
-| `2` | `EXIT_USAGE` | Invalid command line arguments or invalid manifest syntax. |
-| `3` | `EXIT_MUTEX_CONFLICT` | Instance lock busy (`checkout.lock`) or mode conflict without `--switch`. |
-| `4` | `EXIT_NOT_FOUND` | Project, service, or instance target not found. |
-| `5` | `EXIT_REFUSED` | Operation refused (e.g. destructive action without confirmation). |
-| `6` | `EXIT_EXTERNAL_TOOL` | Missing external requirement (`docker`, `compose`, `lsof`). |
+| `0` | `EXIT_OK` | Success. |
+| `1` | `EXIT_OP_FAILED` | Service failure, healthcheck timeout, or teardown error. |
+| `2` | `EXIT_USAGE` | Invalid CLI arguments or schema validation error. |
+| `3` | `EXIT_MUTEX_CONFLICT` | Instance lock busy (`checkout.lock`) or unswitched mode conflict. |
+| `4` | `EXIT_NOT_FOUND` | Target project, service, or instance not found. |
+| `5` | `EXIT_REFUSED` | Destructive action refused without confirmation. |
+| `6` | `EXIT_EXTERNAL_TOOL` | Missing system binary (`docker`, `compose`). |
 | `130` | `EXIT_INTERRUPTED` | Interrupted by signal (`SIGINT`, `SIGTERM`). |
 
 ---
 
-## Manifest Reference (`rig.json`)
+## CLI Command Reference
 
-To inspect or validate manifest configurations against the formal JSON Schema:
+| Command | Arguments | Description |
+|---|---|---|
+| `rig init` | `[--dry-run] [--force] [--up]` | Scans repository and generates a validated `rig.json`. |
+| `rig up` | `[--mode MODE] [--scope SCOPE] [--switch]` | Starts services in dependency order with healthchecks. |
+| `rig down` | `[target] [--all] [--scope SCOPE]` | Gracefully stops services (`SIGTERM` ➜ `SIGKILL`). |
+| `rig status` | `[--json]` | Shows tabular or JSON status of services in the current checkout. |
+| `rig ps` | `[--health] [-w, --wide] [--json]` | Lists all active and stopped `rig` projects machine-wide. |
+| `rig logs` | `[service] [-n TAIL] [--mode MODE]` | Tails service logs from `.local-run/logs/`. |
+| `rig check` | `[--mode MODE]` | Validates manifests, working directories, and binary execution. |
+| `rig prune` | `[--force] [--json]` | Reclaims stale or orphaned instance metadata across the machine. |
+| `rig schema` | `[--json]` | Prints the formal JSON Schema for `rig.json`. |
+| `rig -v, --version` | | Displays current installed version (`rig 1.0.0`). |
+
+---
+
+## Configuration Reference (`rig.json`)
+
+To inspect or validate the JSON Schema directly:
 ```bash
 rig schema
 ```
 
-### Root Fields
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `project` | string | Yes | Project identifier slug used for isolation and Docker Compose naming. |
-| `default_mode` | string | No | Mode to use when `--mode` is omitted (defaults to first mode in `modes` or `native`). |
-| `services` | object | No | Base services active across all modes. |
-| `modes` | object | No | Dictionary of mode configurations (`{"native": {"services": {...}}, "container": ...}`). |
-
-### Service Fields
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `type` | `"fd"` \| `"port"` \| `"compose"` | Yes | Port allocation strategy. |
-| `command` | string | For `fd` / `port` | Command line to execute. Supports `{fd}`, `{port}`, and `{<service>_port}` placeholders. |
-| `cwd` | string | No | Working directory relative to repository root (defaults to `.`). |
-| `health` | string | No | HTTP path to poll for 200 OK (e.g. `/healthz`, `/`). |
-| `health_tcp` | integer | No | TCP port to poll for socket connection (ideal for databases like Postgres/Redis). |
-| `depends_on` | string[] | No | Services that must be healthy before this service starts. |
-| `aliases` | string[] | No | Alternative names for scope targeting (e.g. `["ui"]` for `frontend`). |
-| `env` | map | No | Environment variables. Supports `{<service>_port}` placeholders. |
-| `env_files` | string[] | No | Dotenv-style files, relative to the repository root, loaded before `env`. |
-| `inherit` | string[] | No | Ambient environment variables to pass through beyond the base safe allowlist. |
-| `compose_file` | string | For `compose` | Path to Docker Compose file. |
-| `compose_service`| string | For `compose` | Name of service inside Docker Compose file. |
-| `compose_port` | integer | No | Container port whose published host port is recorded as the service URL. |
-| `docker_context`| string | No | Docker context every command for this service is pinned to. |
-
-### Environment and Docker Endpoint for `compose` Services
-
-`env`, `env_files` and `inherit` apply to `compose` services as well as to `fd`
-and `port` services. The resulting environment is handed to `docker compose`
-itself, so it drives `${VAR}` interpolation inside the compose file and reaches
-the containers.
-
-That environment is an allowlist, so no ambient `DOCKER_*`, `COMPOSE_*` or
-application variable can leak in and point a service at another project's
-resources. The Docker client settings (`DOCKER_CONFIG`, `DOCKER_CERT_PATH`,
-`DOCKER_TLS_VERIFY`) are the exception: they are passed through so a TLS or
-rootless setup can still reach its own daemon.
-
-Those client settings are recorded with the service, and every later plain
-`docker` command — the label query, the inspection, `stop` and `rm` — is given
-the recorded ones instead of whatever the terminal holds. A service started
-against its own `DOCKER_CONFIG` therefore stays reachable for `rig status` and
-`rig down`, and a `DOCKER_CONFIG` exported afterwards cannot redirect them.
-
-The Docker endpoint in force at startup — `DOCKER_HOST` and the Docker context
-— is recorded with the service. Every later status query and teardown is pinned
-to that endpoint, so a `DOCKER_HOST` that changes between `rig up` and `rig
-down` can never send the query to a daemon that does not hold the container.
-
-The endpoint is chosen in Docker's own order of precedence:
-
-1. the `docker_context` the manifest declares;
-2. the ambient `DOCKER_CONTEXT`, which is read even though the service
-   environment is an allowlist, so `DOCKER_CONTEXT=colima rig up` is honoured;
-3. the ambient `DOCKER_HOST`, when neither of the above names a context;
-4. otherwise the active context, resolved with `docker context show`.
-
-Whenever a context decides, it is recorded alone and no host is recorded with
-it, because `--context` outranks `DOCKER_HOST`. A later `docker context use
-colima` therefore does not strand the container: `rig status`, `rig down` and
-`rig prune` still reach the context that holds it.
+| Property | Type | Description |
+|---|---|---|
+| `project` | `string` | **Required.** Slug identifier for instance isolation and Compose project naming. |
+| `default_mode` | `string` | Mode to boot when `--mode` is omitted (defaults to `native`). |
+| `services` | `object` | Base services active across all modes. |
+| `modes` | `object` | Named mode configurations (`native`, `container`, etc.). |
+| `type` | `"fd" \| "port" \| "compose"` | **Required.** Port allocation and execution strategy. |
+| `command` | `string \| string[]` | Command line to execute. Supports `{fd}`, `{port}`, `{<service>_port}`. |
+| `cwd` | `string` | Working directory relative to repository root (defaults to `.`). |
+| `health` | `string` | HTTP endpoint path to poll for HTTP 200 OK (e.g. `/healthz`). |
+| `health_tcp` | `integer` | TCP port to poll for socket connection (ideal for PostgreSQL/Redis). |
+| `depends_on` | `string[]` | Upstream services that must pass healthchecks before boot. |
+| `compose_file` | `string` | Relative path to Docker Compose file (for `type: "compose"`). |
+| `compose_service` | `string` | Service name within the Docker Compose file. |
 
 ---
 
-## Stable & Human-Friendly Port Allocation
+## Zero Runtime Dependencies
 
-`rig` eliminates random ephemeral ports (e.g. `58472`) and maintains stable, human-friendly ports across restarts:
+`rig` is committed to **zero third-party runtime dependencies**. It relies exclusively on the Python standard library (`socket`, `subprocess`, `os`, `signal`, `json`, `fcntl`, `shlex`, `dataclasses`, `pathlib`).
 
-### 1. Precedence Hierarchy
-1. **Explicit `preferred_port` (or `port`)**: Defined per service in `rig.json` (e.g. `"preferred_port": 3000`).
-2. **Sticky Leased Port**: Rig persists assigned ports in instance state (`~/.local/state/rig/instances/<instance>/state.json`), reusing the same port across `rig down` and `rig up`.
-3. **Role-Based Friendly Defaults**:
-   - `frontend` / `web` / `ui` / `client` / `vite` / `next`: starts at `3000`
-   - `backend` / `api` / `server` / `app` / `worker`: starts at `8000`
-   - `docs` / `storybook` / `admin`: starts at `4000`
-   - other / unmatched: starts at `5000`
-4. **Collision-Safe Probing**: If the target port is occupied (e.g. by another checkout running simultaneously), `rig` probes `port + 1`, `port + 2`, etc., avoiding collisions automatically without jumping to high ephemeral numbers.
-
-### 2. Configuration Example
-
-```json
-{
-  "project": "my-app",
-  "services": {
-    "frontend": {
-      "type": "port",
-      "preferred_port": 3000,
-      "command": ["npm", "run", "dev", "--", "--port", "{port}"]
-    },
-    "backend": {
-      "type": "fd",
-      "preferred_port": 8000,
-      "app": "main:app"
-    }
-  }
-}
-```
+- **No background daemons** (`systemd`, `dockerd`, `supervisord`) required to orchestrate native processes.
+- **No Node.js or Ruby runtimes** required.
+- **Instantaneous startup** with file-backed atomic state.
 
 ---
 
-## How Socket Inheritance Works (`type: "fd"`)
+## Direct Drop-in Usage
 
-When a service specifies `type: "fd"`, `rig`:
-1. Creates a TCP socket bound to `127.0.0.1:0`. The OS kernel allocates a free ephemeral port immediately.
-2. Marks the socket listening (`listen(128)`).
-3. Keeps the descriptor open and passes it via `subprocess.Popen(pass_fds=[fd])`.
-4. Passes the integer descriptor to the command line via `--fd {fd}`.
+Because `rig` has zero external dependencies, you can also drop the orchestrator entry point directly into any repository without installing it:
 
-### Python / Uvicorn Example:
-
-```python
-import argparse
-import socket
-import uvicorn
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--fd", type=int, default=None)
-args = parser.parse_args()
-
-if args.fd is not None:
-    sock = socket.fromfd(args.fd, socket.AF_INET, socket.SOCK_STREAM)
-    uvicorn.run("myapp.main:app", fd=sock.fileno())
-else:
-    uvicorn.run("myapp.main:app", host="127.0.0.1", port=8000)
+```bash
+curl -fsSL https://raw.githubusercontent.com/evgesha9400/rig/main/src/rig/cli.py -o scripts/rig.py
+python3 scripts/rig.py up
 ```
 
 ---
 
 ## Symmetrical `Makefile` Integration
+
+Drop these targets into your root `Makefile` for zero-friction developer ergonomics:
 
 ```makefile
 RIG ?= rig
@@ -468,22 +399,21 @@ check:
 	@$(RIG) check
 
 logs:
-	@tail -n 200 -F .local-run/logs/*.log
+	@$(RIG) logs -n 100
 ```
 
 ---
 
-## Development & Testing
+## Links & Ecosystem
 
-```bash
-# Clone the repository
-git clone https://github.com/evgesha9400/rig.git
-cd rig
+- **PyPI Package**: [https://pypi.org/project/rig-cli/](https://pypi.org/project/rig-cli/)
+- **GitHub Repository**: [https://github.com/evgesha9400/rig](https://github.com/evgesha9400/rig)
+- **JSON Schema**: [https://raw.githubusercontent.com/evgesha9400/rig/main/rig.schema.json](https://raw.githubusercontent.com/evgesha9400/rig/main/rig.schema.json)
+- **Issue Tracker**: [https://github.com/evgesha9400/rig/issues](https://github.com/evgesha9400/rig/issues)
+- **Releases & Changelog**: [https://github.com/evgesha9400/rig/releases](https://github.com/evgesha9400/rig/releases)
 
-# Run full test suite with uv
-uv run --with pytest pytest tests/
-```
+---
 
 ## License
 
-MIT
+[MIT](https://github.com/evgesha9400/rig/blob/main/LICENSE) © 2026 Evgeny Aleshin

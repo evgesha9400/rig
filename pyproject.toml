@@ -3,8 +3,52 @@ name = "rig-cli"
 version = "1.0.0"
 description = "Zero-dependency local dev environment and process runner with dynamic port allocation, socket inheritance, and verified lifecycle management."
 readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Evgeny Aleshin"},
+]
 requires-python = ">=3.10"
 dependencies = []
+keywords = [
+    "developer-tools",
+    "process-runner",
+    "local-dev",
+    "socket-inheritance",
+    "socket-activation",
+    "port-allocation",
+    "process-supervisor",
+    "multi-service",
+    "microservices",
+    "fastapi",
+    "uvicorn",
+    "docker-compose",
+    "zero-dependency",
+    "agent-tools",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Monitoring",
+]
+
+[project.urls]
+Homepage = "https://github.com/evgesha9400/rig"
+Documentation = "https://github.com/evgesha9400/rig#readme"
+Repository = "https://github.com/evgesha9400/rig"
+Issues = "https://github.com/evgesha9400/rig/issues"
+Changelog = "https://github.com/evgesha9400/rig/releases"
+"PyPI Package" = "https://pypi.org/project/rig-cli/"
 
 [project.optional-dependencies]
 dev = [

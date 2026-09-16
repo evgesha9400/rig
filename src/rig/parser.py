@@ -41,6 +41,7 @@ def _add_admin_parsers(sub: Any) -> None:
     sub.add_parser("status", help="status")
     p_ps = sub.add_parser("ps", aliases=["ls", "list"], help="ps")
     p_ps.add_argument("--health", action="store_true")
+    p_ps.add_argument("-w", "--wide", action="store_true")
     sub.add_parser("prune", help="prune").add_argument("--force", action="store_true")
     sub.add_parser("check", help="check").add_argument("--mode", default=None)
     p_init = sub.add_parser("init", help="init")

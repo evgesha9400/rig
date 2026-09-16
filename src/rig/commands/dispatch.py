@@ -28,9 +28,15 @@ def _dispatch_command(cmd: str, args: argparse.Namespace) -> int:
             as_json=j,
         ),
         "status": lambda: commands.cmd_status(root, mf, as_json=j),
-        "ps": lambda: commands.cmd_ps(health=args.health, as_json=j),
-        "ls": lambda: commands.cmd_ps(health=args.health, as_json=j),
-        "list": lambda: commands.cmd_ps(health=args.health, as_json=j),
+        "ps": lambda: commands.cmd_ps(
+            health=args.health, as_json=j, wide=getattr(args, "wide", False)
+        ),
+        "ls": lambda: commands.cmd_ps(
+            health=args.health, as_json=j, wide=getattr(args, "wide", False)
+        ),
+        "list": lambda: commands.cmd_ps(
+            health=args.health, as_json=j, wide=getattr(args, "wide", False)
+        ),
         "prune": lambda: commands.cmd_prune(force=args.force, as_json=j),
         "check": lambda: commands.cmd_check(root, mf, mode=args.mode, as_json=j),
         "init": lambda: commands.cmd_init(

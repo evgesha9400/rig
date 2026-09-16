@@ -49,8 +49,13 @@ def test_cmd_ps_empty_and_populated(monkeypatch, tmp_path, capsys):
     assert ret_table == 0
     table_out = capsys.readouterr().out
     assert "proj" in table_out
-    assert "proj-12345678" in table_out
+    assert "12345678" in table_out
     assert "running" in table_out
+
+    ret_wide = stack.cmd_ps(as_json=False, wide=True)
+    assert ret_wide == 0
+    wide_out = capsys.readouterr().out
+    assert "proj-12345678" in wide_out
 
     ret_json = stack.cmd_ps(as_json=True)
     assert ret_json == 0

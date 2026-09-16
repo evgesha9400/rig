@@ -57,6 +57,7 @@ _SUBMODULES = (
     "rig.commands.prune",
     "rig.commands.check",
     "rig.commands.init",
+    "rig.commands.logs",
     "rig.parser",
 )
 

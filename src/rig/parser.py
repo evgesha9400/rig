@@ -48,6 +48,10 @@ def _add_admin_parsers(sub: Any) -> None:
     p_init.add_argument("--force", action="store_true")
     p_init.add_argument("--up", action="store_true")
     sub.add_parser("schema", help="schema")
+    p_logs = sub.add_parser("logs", help="logs")
+    p_logs.add_argument("service", nargs="?", default=None, help="service name")
+    p_logs.add_argument("-n", "--tail", type=int, default=50, help="number of lines")
+    p_logs.add_argument("--mode", default=None, help="mode overlay")
 
 
 def build_parser(as_json: bool = False) -> argparse.ArgumentParser:

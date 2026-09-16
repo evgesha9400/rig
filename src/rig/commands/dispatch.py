@@ -37,6 +37,9 @@ def _dispatch_command(cmd: str, args: argparse.Namespace) -> int:
             root, dry_run=args.dry_run, force=args.force, up=args.up, as_json=j
         ),
         "schema": lambda: commands.cmd_schema(as_json=j),
+        "logs": lambda: commands.cmd_logs(
+            root, mf, service=args.service, tail=args.tail, mode=args.mode, as_json=j
+        ),
     }
     action = dispatch.get(cmd)
     return action() if action else constants.EXIT_OK

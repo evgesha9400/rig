@@ -87,3 +87,38 @@ def format_table(
     div_line = f"{th.d}{'─' * (sum(widths) + gutter * (cols - 1))}{th.r}"
     row_lines = [space.join(pad_cell(r[i], widths[i]) for i in range(cols)) for r in rows]
     return [hdr_line, div_line, *row_lines]
+
+
+def highlight_log_line(line: str, th: Theme) -> str:
+    """Highlight log levels and dim timestamps in log lines without altering content."""
+    if not th.r:
+        return line
+    line = re.sub(
+        r"(\[(?:error|fatal|fail)\]|\b(?:ERROR|FATAL|CRITICAL)\b)",
+        f"{th.red}\\1{th.r}",
+        line,
+        flags=re.I,
+    )
+    line = re.sub(
+        r"(\[(?:warn|warning)\]|\b(?:WARN|WARNING)\b)",
+        f"{th.yellow}\\1{th.r}",
+        line,
+        flags=re.I,
+    )
+    line = re.sub(
+        r"(\[(?:info|notice)\]|\b(?:INFO|NOTICE)\b)",
+        f"{th.green}\\1{th.r}",
+        line,
+        flags=re.I,
+    )
+    line = re.sub(
+        r"(\[(?:debug|trace)\]|\b(?:DEBUG|TRACE)\b)",
+        f"{th.d}\\1{th.r}",
+        line,
+        flags=re.I,
+    )
+    return re.sub(
+        r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)",
+        f"{th.d}\\1{th.r}",
+        line,
+    )

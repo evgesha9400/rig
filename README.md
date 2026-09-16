@@ -87,6 +87,9 @@ rig up
 # Check status of the local checkout
 rig status
 
+# Inspect service logs
+rig logs backend -n 50
+
 # View all running projects and instances across your machine
 rig ps
 

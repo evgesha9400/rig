@@ -327,7 +327,7 @@ Errors provide actionable resolution hints:
 | `rig check` | `[--mode MODE]` | Validates manifests, working directories, and binary execution. |
 | `rig prune` | `[--force] [--json]` | Reclaims stale or orphaned instance metadata across the machine. |
 | `rig schema` | `[--json]` | Prints the formal JSON Schema for `rig.json`. |
-| `rig -v, --version` | | Displays current installed version (`rig 1.0.0`). |
+| `rig -v, --version` | | Displays current installed version (`rig 1.0.1`). |
 
 ---
 

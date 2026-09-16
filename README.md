@@ -27,7 +27,26 @@ Modern multi-service local development often suffers from:
 
 ## Installation
 
-### Install as a Standalone Global Tool (Recommended)
+### Install as a Standalone Global Tool from PyPI (Recommended)
+
+Using `pipx`:
+```bash
+pipx install rig-cli
+```
+
+Using `uv`:
+```bash
+uv tool install rig-cli
+```
+
+Using standard `pip`:
+```bash
+pip install --user rig-cli
+```
+
+Both `rig` and `rig-cli` commands are automatically available on your `$PATH`.
+
+### Install from Git
 
 Using `uv`:
 ```bash

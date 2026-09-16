@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import Any
 
-from rig.core.constants import EXIT_USAGE
+from rig.core.constants import EXIT_USAGE, __version__
 from rig.core.errors import RigError, print_json_error
 
 
@@ -58,6 +58,7 @@ def _add_admin_parsers(sub: Any) -> None:
 def build_parser(as_json: bool = False) -> argparse.ArgumentParser:
     """Construct the command line parser for rig."""
     parser = RigArgumentParser(prog="rig", as_json=as_json)
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--root", default=None)
     parser.add_argument("--manifest", default=None)
     parser.add_argument("--json", action="store_true")

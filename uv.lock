@@ -567,8 +567,8 @@ wheels = [
 ]
 
 [[package]]
-name = "rig"
-version = "0.2.0"
+name = "rig-cli"
+version = "1.0.0"
 source = { editable = "." }
 
 [package.optional-dependencies]

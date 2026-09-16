@@ -1,10 +1,13 @@
 """Tests for terminal formatting, ANSI stripping, and table alignment."""
 
 import io
+import os
 
 from rig.core.terminal import (
+    contract_path,
     format_table,
     get_theme,
+    middle_truncate,
     pad_cell,
     strip_ansi,
     supports_color,
@@ -96,3 +99,19 @@ def test_format_human_error():
     assert "Searched in: /tmp" in output
     assert "Hint: Run 'rig init' to scaffold a new manifest" in output
     assert "[E_USAGE]" in output
+
+
+def test_contract_path():
+    assert contract_path("") == ""
+    assert contract_path("n/a") == "n/a"
+    home = os.path.expanduser("~")
+    assert contract_path(f"{home}/projects/rig") == "~/projects/rig"
+    assert contract_path("/var/log/syslog") == "/var/log/syslog"
+
+
+def test_middle_truncate():
+    assert middle_truncate("short", 10) == "short"
+    assert middle_truncate("exact_len", 9) == "exact_len"
+    assert middle_truncate("abcdefghij", 7) == "abc…hij"
+    assert middle_truncate("abcdef", 4) == "a…ef"
+    assert middle_truncate("a/b/c/d/e/f", 7) == "a/b…e/f"

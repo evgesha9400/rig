@@ -72,6 +72,27 @@ def pad_cell(text: str, width: int, align: str = "left") -> str:
     return pad + text if align == "right" else text + pad
 
 
+def contract_path(path_str: str) -> str:
+    """Contract home directory path to ~ prefix."""
+    if not path_str or path_str == "n/a":
+        return path_str
+    home = os.path.expanduser("~")
+    return f"~{path_str[len(home) :]}" if path_str.startswith(home) else path_str
+
+
+MIN_ELLIPSIS_LEN = 4
+
+
+def middle_truncate(text: str, max_len: int) -> str:
+    """Truncate middle of text with ellipsis if exceeding max_len."""
+    if len(text) <= max_len:
+        return text
+    if max_len < MIN_ELLIPSIS_LEN:
+        return text[:max_len]
+    left = (max_len - 1) // 2
+    return f"{text[:left]}…{text[-(max_len - 1 - left) :]}"
+
+
 def format_table(
     headers: Sequence[str],
     rows: Sequence[Sequence[str]],

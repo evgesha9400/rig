@@ -22,6 +22,13 @@ def _no_ambient_docker_context(monkeypatch):
     monkeypatch.setattr(rig, "resolve_current_docker_context", lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_rig_state_home(monkeypatch, tmp_path_factory):
+    """Keep test instances isolated from the user's real state directory."""
+    temp_state = tmp_path_factory.mktemp("rig_state")
+    monkeypatch.setenv("RIG_STATE_HOME", str(temp_state))
+
+
 @pytest.fixture
 def write_compose_file():
     """Fixture to write a basic compose.yml into a target directory."""

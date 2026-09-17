@@ -1,6 +1,6 @@
 [project]
 name = "rig-cli"
-version = "1.0.1"
+version = "1.0.2"
 description = "Zero-dependency local dev environment and process runner with dynamic port allocation, socket inheritance, and verified lifecycle management."
 readme = "README.md"
 license = {text = "MIT"}

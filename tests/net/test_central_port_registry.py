@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from rig.net.ports import compute_candidate_ports
 from rig.net.registry import (
     get_allocated_ports_for_others,
@@ -10,6 +12,11 @@ from rig.net.registry import (
     read_port_registry,
     release_port_allocation,
 )
+
+
+@pytest.fixture(autouse=True)
+def _always_free_ports(monkeypatch):
+    monkeypatch.setattr("rig.net.registry.port_is_free", lambda _: True)
 
 
 class DummyService:

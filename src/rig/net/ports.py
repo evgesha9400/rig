@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from rig.core.constants import PORT_MAX, PORT_MIN, PORT_RELEASE_TIMEOUT_SECS
+from rig.net.probe import _get_listener_pids
 from rig.net.registry import (
     get_allocated_ports_for_others,
     get_or_allocate_port,
@@ -25,10 +26,11 @@ _BASE_PORT_RULES = (
 
 
 def _bind_candidate_port(port: int) -> tuple[socket.socket, int] | None:
-    if port < PORT_MIN or port > PORT_MAX:
+    if port < PORT_MIN or port > PORT_MAX or _get_listener_pids(port):
         return None
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", port))
         listener.listen(socket.SOMAXCONN)
     except OSError:

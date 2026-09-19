@@ -22,6 +22,7 @@ from rig.core.errors import RigError, print_json_envelope
 from rig.core.identity import get_instances_dir
 from rig.core.locks import exclusive_lock
 from rig.core.state import read_state, write_state
+from rig.net.ports import wait_for_port_release
 
 
 def _stop_instance_records(
@@ -34,12 +35,15 @@ def _stop_instance_records(
             failed_svcs.add(name)
             continue
         outcome = _stop_record(services[name], root)
-        if outcome in ("terminated", "killed", "stale"):
-            state["services"].pop(name, None)
-            stopped.append(name)
-        else:
+        if outcome not in ("terminated", "killed", "stale"):
             failed_svcs.add(name)
             failed.append(f"{name}: {outcome}")
+            continue
+        port = services[name].get("port")
+        state["services"].pop(name, None)
+        stopped.append(name)
+        if port and not wait_for_port_release(int(port)):
+            failed.append(f"{name}: port {port} still held")
     return stopped, failed
 
 

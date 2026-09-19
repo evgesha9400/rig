@@ -45,3 +45,36 @@ def test_port_is_free_detects_a_live_listener():
     finally:
         listener.close()
     assert stack.port_is_free(port) is True
+
+
+def test_port_is_free_detects_wildcard_listener():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        assert stack.port_is_free(port) is False
+    assert stack.port_is_free(port) is True
+
+
+def test_wait_for_port_release_waits_for_listener_to_close():
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    assert stack.wait_for_port_release(port, timeout=0.05) is False
+    listener.close()
+    assert stack.wait_for_port_release(port, timeout=1.0) is True
+
+
+def test_bind_candidate_port_avoids_live_listener_and_reuses_time_wait():
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        assert stack._bind_candidate_port(port) is None
+    finally:
+        listener.close()
+    cand = stack._bind_candidate_port(port)
+    assert cand is not None
+    cand[0].close()

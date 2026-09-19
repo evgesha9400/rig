@@ -13,6 +13,7 @@ from typing import Any
 from rig.core.constants import DIR_MODE_PRIVATE, FILE_MODE_PRIVATE, PORT_MAX, PORT_MIN
 from rig.core.identity import get_state_home
 from rig.core.locks import exclusive_lock
+from rig.net.probe import _get_listener_pids
 
 PORT_REGISTRY_FILE = "ports.json"
 PORT_LOCK_FILE = "ports.lock"
@@ -20,6 +21,8 @@ PORT_LOCK_FILE = "ports.lock"
 
 def port_is_free(port: int) -> bool:
     """Return True when nothing is listening on port on loopback."""
+    if _get_listener_pids(port):
+        return False
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     with probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

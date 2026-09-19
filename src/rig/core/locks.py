@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from rig.core.constants import (
+    DATA_DIR_NAME,
     DIR_MODE_PRIVATE,
     FILE_MODE_PRIVATE,
     LOCK_FILE_NAME,
@@ -36,7 +37,7 @@ def ensure_runtime_dir(root: Path) -> Path:
     if stat.S_IMODE(info.st_mode) != DIR_MODE_PRIVATE:
         os.chmod(runtime, DIR_MODE_PRIVATE)
     (runtime / LOG_DIR_NAME).mkdir(mode=DIR_MODE_PRIVATE, exist_ok=True)
-    (Path(root) / "data").mkdir(parents=True, exist_ok=True)
+    (runtime / DATA_DIR_NAME).mkdir(mode=DIR_MODE_PRIVATE, exist_ok=True)
     return runtime
 
 

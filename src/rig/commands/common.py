@@ -9,7 +9,7 @@ from typing import Any
 
 from rig.compose.stopper import compose_stop_record
 from rig.compose.supervisor import compose_record_alive, compose_record_status
-from rig.core.constants import TEARDOWN_TIMEOUT_SECS
+from rig.core.constants import RUNTIME_DIR_NAME, TEARDOWN_TIMEOUT_SECS
 from rig.core.identity import instance_id
 from rig.core.locks import _lock_path, ensure_runtime_dir
 from rig.core.state import _state_path
@@ -73,7 +73,7 @@ def _values_for(state: Mapping[str, Any], root: Path, instance: str) -> dict[str
     values: dict[str, Any] = {
         "root": str(root),
         "instance": instance,
-        "data_dir": str(Path(root) / "data"),
+        "data_dir": str(Path(root) / RUNTIME_DIR_NAME / "data"),
         "python": sys.executable,
     }
     for name, record in state.get("services", {}).items():

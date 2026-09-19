@@ -61,6 +61,7 @@ def test_status_of_an_empty_checkout_reports_no_services(tmp_path, capsys):
 
     assert exit_code == 0
     assert "backend" in capsys.readouterr().out
+    assert not (tmp_path / "data").exists()
 
 
 def test_down_on_an_empty_checkout_is_idempotent(tmp_path):

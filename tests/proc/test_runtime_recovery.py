@@ -18,7 +18,8 @@ SAMPLE = {
 def test_ensure_runtime_dir_creates_data_directory(tmp_path: Path):
     runtime = stack.ensure_runtime_dir(tmp_path)
     assert runtime.is_dir()
-    assert (tmp_path / "data").is_dir()
+    assert not (tmp_path / "data").exists()
+    assert (runtime / "data").is_dir()
 
 
 def test_await_ready_fails_when_pid_dies_despite_http_success(monkeypatch):

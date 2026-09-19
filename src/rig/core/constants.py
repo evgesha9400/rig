@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 
 RUNTIME_DIR_NAME = ".local-run"
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 LOCK_FILE_NAME = "checkout.lock"
 STATE_FILE_NAME = "state.json"
 LOG_DIR_NAME = "logs"
+DATA_DIR_NAME = "data"
 DIR_MODE_PRIVATE = 0o700
 FILE_MODE_PRIVATE = 0o600
 
